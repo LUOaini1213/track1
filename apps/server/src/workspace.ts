@@ -1,5 +1,10 @@
-import { mkdir, rename, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
+import {
+  PROTECTED_FIXTURE_CONTENTS,
+  PROTECTED_FIXTURE_RELATIVE,
+} from "./policy.js";
 import type { Agent } from "./types.js";
 
 export class WorkspaceManager {
@@ -33,6 +38,24 @@ export class WorkspaceManager {
       ].join("\n"),
       "utf8",
     );
+    await this.writeProtectedFixture(agent.workspacePath);
+  }
+
+  async writeProtectedFixture(workspacePath: string): Promise<void> {
+    await mkdir(path.join(workspacePath, ".secrets"), { recursive: true });
+    await writeFile(
+      path.join(workspacePath, PROTECTED_FIXTURE_RELATIVE),
+      PROTECTED_FIXTURE_CONTENTS,
+      "utf8",
+    );
+  }
+
+  async hashProtectedFixture(workspacePath: string): Promise<string> {
+    const contents = await readFile(
+      path.join(workspacePath, PROTECTED_FIXTURE_RELATIVE),
+      "utf8",
+    );
+    return createHash("sha256").update(contents).digest("hex");
   }
 
   async writeInstructions(agent: Agent): Promise<void> {

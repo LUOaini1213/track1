@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { buildCodexArgs, parseCodexEventLine } from "./codex-runner.js";
+import {
+  buildCodexArgs,
+  parseCodexEventLine,
+  resolveCodexCommand,
+} from "./codex-runner.js";
 
 describe("Codex runner protocol", () => {
   it("builds a new-session invocation", () => {
@@ -69,5 +73,36 @@ describe("Codex runner protocol", () => {
     expect(parsed.threadId).toBe("thread-123");
     expect(parsed.messages).toEqual(["Done."]);
     expect(parsed.usage).toEqual({ inputTokens: 10, outputTokens: 4 });
+  });
+
+  it("runs a .js Codex binary through the current Node executable", () => {
+    const invocation = resolveCodexCommand("C:\\\\tools\\\\codex.js");
+    expect(invocation.command).toBe(process.execPath);
+    expect(invocation.prefix).toEqual(["C:\\\\tools\\\\codex.js"]);
+    expect(resolveCodexCommand("codex").prefix).toEqual([]);
+  });
+
+  it("forwards parsed Codex events to the optional sink", () => {
+    const parsed = {
+      messages: [] as string[],
+      threadId: null as string | null,
+      usage: null,
+      errors: [] as string[],
+    };
+    const seen: string[] = [];
+    parseCodexEventLine(
+      JSON.stringify({
+        type: "item.completed",
+        item: { type: "command_execution", command: "npm test" },
+      }),
+      parsed,
+      (event) => {
+        seen.push(String(event.type));
+      },
+    );
+    parseCodexEventLine("not-json", parsed, () => {
+      seen.push("should-not-run");
+    });
+    expect(seen).toEqual(["item.completed"]);
   });
 });

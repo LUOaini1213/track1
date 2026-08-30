@@ -1,8 +1,14 @@
 import { randomUUID } from "node:crypto";
 import type { AppConfig } from "./config.js";
 import { isArkConfigured } from "./config.js";
-import { HttpError, RunCancelledError } from "./errors.js";
+import { HttpError, PolicyDeniedError, RunCancelledError } from "./errors.js";
+import {
+  commandFromCodexEvent,
+  inspectForSecretExfiltration,
+} from "./policy.js";
+import { redactText } from "./redact.js";
 import { JsonStore } from "./store.js";
+import { TraceCollector } from "./trace.js";
 import type {
   Agent,
   AgentRun,
@@ -142,6 +148,15 @@ export class AgentService {
     return run;
   }
 
+  getTrace(runId: string): {
+    run: AgentRun;
+    traceId: string;
+    spans: AgentRun["spans"];
+  } {
+    const run = this.getRun(runId);
+    return { run, traceId: run.traceId, spans: run.spans };
+  }
+
   getRuns(agentId: string): AgentRun[] {
     this.getAgent(agentId);
     return this.store
@@ -162,24 +177,27 @@ export class AgentService {
     }
     const timestamp = now();
     const runId = randomUUID();
+    const storedPrompt = redactText(prompt);
     const run: AgentRun = {
       id: runId,
       agentId,
       status: "queued",
-      prompt,
+      prompt: storedPrompt,
       output: null,
       error: null,
       usage: null,
       startedAt: null,
       completedAt: null,
       createdAt: timestamp,
+      traceId: randomUUID(),
+      spans: [],
     };
     const message: Message = {
       id: randomUUID(),
       agentId,
       runId,
       role: "user",
-      content: prompt,
+      content: storedPrompt,
       createdAt: timestamp,
     };
     const agentAtStart = await this.store.mutate((database) => {
@@ -232,63 +250,164 @@ export class AgentService {
     };
   }
 
+  private async persistTrace(
+    runId: string,
+    collector: TraceCollector,
+  ): Promise<void> {
+    const spans = collector.snapshot();
+    await this.store.mutate((database) => {
+      const storedRun = database.runs.find((item) => item.id === runId);
+      if (storedRun) {
+        storedRun.traceId = collector.traceId;
+        storedRun.spans = spans;
+      }
+    });
+  }
+
   private async executeRun(agentAtStart: Agent, run: AgentRun): Promise<void> {
+    const collector = new TraceCollector(run.id, agentAtStart.id, (spans) => {
+      void this.store.mutate((database) => {
+        const storedRun = database.runs.find((item) => item.id === run.id);
+        if (storedRun) {
+          storedRun.traceId = collector.traceId;
+          storedRun.spans = spans;
+        }
+      });
+    });
     await this.store.mutate((database) => {
       const storedRun = database.runs.find((item) => item.id === run.id);
       if (storedRun) {
         storedRun.status = "running";
         storedRun.startedAt = now();
+        storedRun.traceId = collector.traceId;
       }
     });
+    const rootSpanId = collector.startSpan(
+      "run.execute",
+      "orchestration",
+      null,
+      { promptChars: run.prompt.length },
+    );
+    const policySpanId = collector.startSpan(
+      "policy.check",
+      "policy",
+      rootSpanId,
+    );
     try {
       if (this.cancellationRequests.has(agentAtStart.id)) {
         throw new RunCancelledError();
       }
-      const result = await this.runner.run({
-        agentId: agentAtStart.id,
-        workspacePath: agentAtStart.workspacePath,
-        prompt: run.prompt,
-        threadId: agentAtStart.codexThreadId,
-      });
-      const completedAt = now();
-      await this.store.mutate((database) => {
-        const storedRun = database.runs.find((item) => item.id === run.id);
-        const agent = database.agents.find((item) => item.id === agentAtStart.id);
-        if (!storedRun || !agent) return;
-        storedRun.status = "completed";
-        storedRun.output = result.output;
-        storedRun.usage = result.usage;
-        storedRun.completedAt = completedAt;
-        database.messages.push({
-          id: randomUUID(),
-          agentId: agent.id,
-          runId: run.id,
-          role: "assistant",
-          content: result.output,
-          createdAt: completedAt,
+      const decision = inspectForSecretExfiltration(run.prompt);
+      if (!decision.allowed) {
+        collector.endSpan(policySpanId, "denied", {
+          ruleId: decision.ruleId,
+          reason: decision.reason,
         });
-        agent.status = "ready";
-        agent.codexThreadId = result.threadId;
-        agent.lastError = null;
-        agent.updatedAt = completedAt;
-      });
+        collector.endSpan(rootSpanId, "denied");
+        throw new PolicyDeniedError(decision.ruleId);
+      }
+      collector.endSpan(policySpanId, "ok", { ruleId: "allow" });
+
+      const runtimeSpanId = collector.startSpan(
+        "runtime.spawn",
+        "runtime",
+        rootSpanId,
+        { workspace: agentAtStart.workspacePath },
+      );
+      try {
+        const result = await this.runner.run({
+          agentId: agentAtStart.id,
+          workspacePath: agentAtStart.workspacePath,
+          prompt: run.prompt,
+          threadId: agentAtStart.codexThreadId,
+          onCodexEvent: (event) => {
+            collector.recordCodexEvent(runtimeSpanId, event);
+            const command = commandFromCodexEvent(event);
+            if (!command) {
+              return;
+            }
+            const live = inspectForSecretExfiltration(command);
+            if (!live.allowed) {
+              const denyId = collector.startSpan(
+                "policy.live",
+                "policy",
+                runtimeSpanId,
+                { ruleId: live.ruleId, reason: live.reason },
+              );
+              collector.endSpan(denyId, "denied");
+              throw new PolicyDeniedError(live.ruleId);
+            }
+          },
+        });
+        collector.endSpan(runtimeSpanId, "ok");
+        collector.endSpan(rootSpanId, "ok");
+        const completedAt = now();
+        const output = redactText(result.output);
+        await this.persistTrace(run.id, collector);
+        await this.store.mutate((database) => {
+          const storedRun = database.runs.find((item) => item.id === run.id);
+          const agent = database.agents.find((item) => item.id === agentAtStart.id);
+          if (!storedRun || !agent) return;
+          storedRun.status = "completed";
+          storedRun.output = output;
+          storedRun.usage = result.usage;
+          storedRun.completedAt = completedAt;
+          storedRun.traceId = collector.traceId;
+          storedRun.spans = collector.snapshot();
+          database.messages.push({
+            id: randomUUID(),
+            agentId: agent.id,
+            runId: run.id,
+            role: "assistant",
+            content: output,
+            createdAt: completedAt,
+          });
+          agent.status = "ready";
+          agent.codexThreadId = result.threadId;
+          agent.lastError = null;
+          agent.updatedAt = completedAt;
+        });
+      } catch (error) {
+        const runtimeStatus =
+          error instanceof PolicyDeniedError
+            ? "denied"
+            : error instanceof RunCancelledError
+              ? "cancelled"
+              : "error";
+        collector.endSpan(runtimeSpanId, runtimeStatus);
+        throw error;
+      }
     } catch (error) {
       const completedAt = now();
       const cancelled = error instanceof RunCancelledError;
+      const denied = error instanceof PolicyDeniedError;
       const message = error instanceof Error ? error.message : String(error);
+      const rootStatus = cancelled ? "cancelled" : denied ? "denied" : "error";
+      if (
+        collector.spans.some(
+          (span) => span.spanId === rootSpanId && span.endedAt === null,
+        )
+      ) {
+        collector.endSpan(rootSpanId, rootStatus, {
+          error: redactText(message),
+        });
+      }
+      await this.persistTrace(run.id, collector);
       await this.store.mutate((database) => {
         const storedRun = database.runs.find((item) => item.id === run.id);
         const agent = database.agents.find((item) => item.id === agentAtStart.id);
         if (storedRun) {
           storedRun.status = cancelled ? "cancelled" : "failed";
-          storedRun.error = message;
+          storedRun.error = redactText(message);
           storedRun.completedAt = completedAt;
+          storedRun.traceId = collector.traceId;
+          storedRun.spans = collector.snapshot();
         }
         if (agent) {
           if (agent.status !== "stopped") {
-            agent.status = cancelled ? "ready" : "error";
+            agent.status = cancelled || denied ? "ready" : "error";
           }
-          agent.lastError = cancelled ? null : message;
+          agent.lastError = cancelled || denied ? null : redactText(message);
           agent.updatedAt = completedAt;
         }
       });

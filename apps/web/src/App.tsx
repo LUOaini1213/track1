@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError, setAuthToken } from "./api";
-import type { Agent, AgentRun, Message, SystemInfo } from "./types";
+import type { Agent, AgentRun, Message, SystemInfo, TraceSpan } from "./types";
 
 const starterPrompts = [
   "Create a small TypeScript CLI that prints a weather summary from sample JSON.",
@@ -35,6 +35,69 @@ function Spinner() {
   return <span className="spinner" aria-label="Loading" />;
 }
 
+function TracePanel({
+  spans,
+  selectedId,
+  onSelect,
+}: {
+  spans: TraceSpan[];
+  selectedId: string | null;
+  onSelect: (id: string) => void;
+}) {
+  const failing = spans.find(
+    (span) => span.status === "error" || span.status === "denied",
+  );
+  const selected = spans.find((span) => span.spanId === selectedId) ?? failing;
+  return (
+    <section className="trace-panel" aria-label="Run trace">
+      <div className="trace-panel-header">
+        <div>
+          <span className="eyebrow">Trace Plane</span>
+          <strong>Run timeline</strong>
+        </div>
+        {failing ? (
+          <button
+            type="button"
+            className="button button-ghost"
+            onClick={() => onSelect(failing.spanId)}
+          >
+            Open failing step
+          </button>
+        ) : (
+          <span className="trace-count">{spans.length} spans</span>
+        )}
+      </div>
+      <ol className="trace-list">
+        {spans.map((span) => (
+          <li key={span.spanId}>
+            <button
+              type="button"
+              className={
+                "trace-row trace-" +
+                span.status +
+                (selected?.spanId === span.spanId ? " selected" : "")
+              }
+              onClick={() => onSelect(span.spanId)}
+            >
+              <span className="trace-kind">{span.kind}</span>
+              <span className="trace-name">{span.name}</span>
+              <span className="trace-status">{span.status}</span>
+              <span className="trace-duration">
+                {span.durationMs != null ? span.durationMs + "ms" : "…"}
+              </span>
+            </button>
+          </li>
+        ))}
+      </ol>
+      {selected ? (
+        <pre className="trace-attributes">
+          {JSON.stringify(selected.attributes, null, 2)}
+        </pre>
+      ) : null}
+    </section>
+  );
+}
+
 export default function App() {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -45,6 +108,8 @@ export default function App() {
   const [form, setForm] = useState(emptyForm);
   const [prompt, setPrompt] = useState("");
   const [activeRun, setActiveRun] = useState<AgentRun | null>(null);
+  const [spans, setSpans] = useState<TraceSpan[]>([]);
+  const [selectedSpanId, setSelectedSpanId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [authRequired, setAuthRequired] = useState<boolean | null>(null);
@@ -98,16 +163,24 @@ export default function App() {
 
   useEffect(() => {
     setActiveRun(null);
+    setSpans([]);
+    setSelectedSpanId(null);
     setShowSettings(false);
     if (!selectedId) {
       setMessages([]);
       return;
     }
     void Promise.all([refreshMessages(selectedId), api.runs(selectedId)])
-      .then(([, result]) => {
+      .then(async ([, result]) => {
         if (selectedIdRef.current !== selectedId) return;
         const latest = result.runs[0] ?? null;
         setActiveRun(latest);
+        if (latest) {
+          const trace = await api.trace(latest.id).catch(() => null);
+          if (selectedIdRef.current === selectedId && trace) {
+            setSpans(trace.spans);
+          }
+        }
         if (latest && ["queued", "running"].includes(latest.status)) {
           void pollRun(latest.id, selectedId).catch((reason) =>
             setError(reason instanceof Error ? reason.message : String(reason)),
@@ -209,7 +282,11 @@ export default function App() {
         await new Promise((resolve) => window.setTimeout(resolve, 900));
         if (!mountedRef.current) return;
         const result = await api.run(runId);
-        if (selectedIdRef.current === agentId) setActiveRun(result.run);
+        const trace = await api.trace(runId).catch(() => null);
+        if (selectedIdRef.current === agentId) {
+          setActiveRun(result.run);
+          if (trace) setSpans(trace.spans);
+        }
         if (!["queued", "running"].includes(result.run.status)) {
           await Promise.all([refreshMessages(agentId), refreshAgents()]);
           return;
@@ -231,6 +308,8 @@ export default function App() {
       if (selectedIdRef.current === selected.id) {
         setMessages((current) => [...current, result.message]);
         setActiveRun(result.run);
+        setSpans(result.run.spans ?? []);
+        setSelectedSpanId(null);
       }
       setAgents((current) =>
         current.map((agent) =>
@@ -540,6 +619,14 @@ export default function App() {
                 )}
                 <div ref={messageEnd} />
               </div>
+
+              {spans.length > 0 ? (
+                <TracePanel
+                  spans={spans}
+                  selectedId={selectedSpanId}
+                  onSelect={setSelectedSpanId}
+                />
+              ) : null}
 
               <form className="composer" onSubmit={sendMessage}>
                 <textarea

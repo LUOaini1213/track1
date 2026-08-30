@@ -80,9 +80,9 @@ Only three deliverables are required:
 
 ## Acceptance checklist
 
-- [ ] The README names one selected track.
-- [ ] A reviewer can run the project from the documented command.
-- [ ] Middleware executes in the backend or Runtime path, not only in the UI.
-- [ ] The demo includes a positive and a failure, denial, or malicious case.
-- [ ] Automated evidence covers the core event or policy decision.
-- [ ] No secret appears in source, logs, traces, screenshots, or the browser.
+- [x] The README names one selected track.
+- [x] A reviewer can run the project from the documented command.
+- [x] Middleware executes in the backend or Runtime path, not only in the UI.
+- [x] The demo includes a positive and a failure, denial, or malicious case.
+- [x] Automated evidence covers the core event or policy decision.
+- [x] No secret appears in source, logs, traces, screenshots, or the browser.

@@ -74,9 +74,11 @@ the stored Codex thread, and escalate termination after a grace period.
 
 | Track | Primary seam | Expected change |
 | --- | --- | --- |
-| Glass Box | `AgentRunner`, `AgentRun` | Emit and display correlated execution events. |
+| Glass Box (implemented) | `AgentRunner`, `AgentRun.spans`, `GET /api/runs/:id/trace` | Correlated execution events, redaction, secret-exfil policy span. |
 | Bouncer | API routes, Agent ownership | Add identity and server-side authorization. |
 | Kill Switch | `AgentRunner` | Add threat-specific policy or a stronger sandbox. |
+
+See [TRACE_PLANE.md](TRACE_PLANE.md).
 
 The current container or ECS instance is the POC trust boundary. Ordinary
 containers are not hardened multi-tenant isolation.

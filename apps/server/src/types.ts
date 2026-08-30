@@ -30,6 +30,31 @@ export interface RunUsage {
   outputTokens?: number;
 }
 
+export type SpanKind =
+  | "orchestration"
+  | "runtime"
+  | "model"
+  | "tool"
+  | "sandbox"
+  | "policy";
+
+export type SpanStatus = "ok" | "error" | "denied" | "cancelled";
+
+export interface TraceSpan {
+  traceId: string;
+  spanId: string;
+  parentSpanId: string | null;
+  runId: string;
+  agentId: string;
+  name: string;
+  kind: SpanKind;
+  status: SpanStatus;
+  startedAt: string;
+  endedAt: string | null;
+  durationMs: number | null;
+  attributes: Record<string, string | number | boolean | null>;
+}
+
 export interface AgentRun {
   id: string;
   agentId: string;
@@ -41,10 +66,12 @@ export interface AgentRun {
   startedAt: string | null;
   completedAt: string | null;
   createdAt: string;
+  traceId: string;
+  spans: TraceSpan[];
 }
 
 export interface Database {
-  version: 1;
+  version: 2;
   agents: Agent[];
   messages: Message[];
   runs: AgentRun[];
@@ -73,6 +100,7 @@ export interface RunnerRequest {
   workspacePath: string;
   prompt: string;
   threadId: string | null;
+  onCodexEvent?: ((event: Record<string, unknown>) => void) | undefined;
 }
 
 export interface AgentRunner {

@@ -593,7 +593,7 @@ textarea:focus {
   border-radius: 17px;
   overflow: hidden;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
 }
 
 .playground-topbar {
@@ -822,6 +822,100 @@ textarea:focus {
   padding: 10px 12px;
   color: #9e4545;
   font-size: 11px;
+}
+
+.trace-panel {
+  border-top: 1px solid #e1dfd8;
+  background: #f6f5f1;
+  padding: 10px 18px 12px;
+  max-height: 220px;
+  overflow: auto;
+}
+
+.trace-panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.trace-panel-header strong {
+  display: block;
+  font-size: 12px;
+}
+
+.trace-count {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.trace-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.trace-row {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr) 72px 56px;
+  gap: 8px;
+  align-items: center;
+  border: 1px solid transparent;
+  background: white;
+  border-radius: 8px;
+  padding: 6px 8px;
+  cursor: pointer;
+  text-align: left;
+  font-size: 10px;
+}
+
+.trace-row.selected {
+  border-color: #b7aaee;
+  background: #f4f1ff;
+}
+
+.trace-kind {
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #7b7c74;
+  font-weight: 700;
+  font-size: 8px;
+}
+
+.trace-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trace-status,
+.trace-duration {
+  color: #6f6f69;
+  font-variant-numeric: tabular-nums;
+}
+
+.trace-error,
+.trace-denied {
+  background: #fbefed;
+}
+
+.trace-denied .trace-status,
+.trace-error .trace-status {
+  color: var(--red);
+  font-weight: 700;
+}
+
+.trace-attributes {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  background: #1f1d1a;
+  color: #f4efe8;
+  border-radius: 8px;
+  font-size: 10px;
+  overflow-x: auto;
 }
 
 .composer {

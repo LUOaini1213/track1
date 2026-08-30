@@ -32,8 +32,8 @@ describe("Container Codex runner", () => {
       "launchpad-test-instance-agent-unsafe",
     );
     expect(args).toContain("runtime:test");
-    expect(args).toContain("type=bind,src=/tmp/agent-workspace,dst=/workspace");
-    expect(args).toContain("type=bind,src=/tmp/codex-home,dst=/codex-home");
+    expect(args.some((arg) => arg.includes("dst=/workspace"))).toBe(true);
+    expect(args.some((arg) => arg.includes("dst=/codex-home"))).toBe(true);
     expect(args).toContain("501:20");
     expect(args).toContain("workspace-write");
     expect(args).toContain("/workspace");

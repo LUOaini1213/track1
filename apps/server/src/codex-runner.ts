@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { spawn, type ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
 import type { AppConfig } from "./config.js";
-import { RunCancelledError } from "./errors.js";
+import { PolicyDeniedError, RunCancelledError } from "./errors.js";
 import type {
   AgentRunner,
   RunUsage,
@@ -41,13 +41,29 @@ export function buildCodexArgs(
   return args;
 }
 
-export function parseCodexEventLine(line: string, parsed: ParsedEvents): void {
+export function resolveCodexCommand(bin: string): {
+  command: string;
+  prefix: string[];
+} {
+  if (bin.endsWith(".js") || bin.endsWith(".mjs")) {
+    return { command: process.execPath, prefix: [bin] };
+  }
+  return { command: bin, prefix: [] };
+}
+
+export function parseCodexEventLine(
+  line: string,
+  parsed: ParsedEvents,
+  onEvent?: (event: Record<string, unknown>) => void,
+): void {
   let event: Record<string, unknown>;
   try {
     event = JSON.parse(line) as Record<string, unknown>;
   } catch {
     return;
   }
+
+  onEvent?.(event);
 
   if (event.type === "thread.started" && typeof event.thread_id === "string") {
     parsed.threadId = event.thread_id;
@@ -103,10 +119,15 @@ export class CodexRunner implements AgentRunner {
 
   async isAvailable(): Promise<boolean> {
     try {
-      await execFileAsync(this.config.codexBin, ["--version"], {
-        timeout: 5_000,
-        env: this.childEnvironment(),
-      });
+      const invocation = resolveCodexCommand(this.config.codexBin);
+      await execFileAsync(
+        invocation.command,
+        [...invocation.prefix, "--version"],
+        {
+          timeout: 5_000,
+          env: this.childEnvironment(),
+        },
+      );
       return true;
     } catch {
       return false;
@@ -130,7 +151,8 @@ export class CodexRunner implements AgentRunner {
     }
 
     const args = buildCodexArgs(request, this.config.codexSandboxMode);
-    const child = spawn(this.config.codexBin, args, {
+    const invocation = resolveCodexCommand(this.config.codexBin);
+    const child = spawn(invocation.command, [...invocation.prefix, ...args], {
       cwd: request.workspacePath,
       env: this.childEnvironment(),
       stdio: ["ignore", "pipe", "pipe"],
@@ -158,6 +180,20 @@ export class CodexRunner implements AgentRunner {
     let stdout = "";
     let stderr = "";
     let totalBytes = 0;
+    let policyError: PolicyDeniedError | null = null;
+
+    const sink = (event: Record<string, unknown>) => {
+      try {
+        request.onCodexEvent?.(event);
+      } catch (error) {
+        if (error instanceof PolicyDeniedError) {
+          policyError = error;
+          this.terminate(active);
+          return;
+        }
+        throw error;
+      }
+    };
 
     const consume = (chunk: Buffer, target: "stdout" | "stderr") => {
       totalBytes += chunk.byteLength;
@@ -171,7 +207,7 @@ export class CodexRunner implements AgentRunner {
         const lines = stdout.split(/\r?\n/);
         stdout = lines.pop() ?? "";
         for (const line of lines) {
-          parseCodexEventLine(line, parsed);
+          parseCodexEventLine(line, parsed, sink);
         }
       } else {
         stderr += chunk.toString("utf8");
@@ -196,7 +232,10 @@ export class CodexRunner implements AgentRunner {
         child.once("close", (code) => resolve(code ?? 1));
       });
       if (stdout.trim()) {
-        parseCodexEventLine(stdout.trim(), parsed);
+        parseCodexEventLine(stdout.trim(), parsed, sink);
+      }
+      if (policyError) {
+        throw policyError;
       }
       if (active.cancelled) {
         throw new RunCancelledError();

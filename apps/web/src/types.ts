@@ -23,6 +23,31 @@ export interface Message {
   createdAt: string;
 }
 
+export type SpanKind =
+  | "orchestration"
+  | "runtime"
+  | "model"
+  | "tool"
+  | "sandbox"
+  | "policy";
+
+export type SpanStatus = "ok" | "error" | "denied" | "cancelled";
+
+export interface TraceSpan {
+  traceId: string;
+  spanId: string;
+  parentSpanId: string | null;
+  runId: string;
+  agentId: string;
+  name: string;
+  kind: SpanKind;
+  status: SpanStatus;
+  startedAt: string;
+  endedAt: string | null;
+  durationMs: number | null;
+  attributes: Record<string, string | number | boolean | null>;
+}
+
 export interface AgentRun {
   id: string;
   agentId: string;
@@ -36,6 +61,8 @@ export interface AgentRun {
     outputTokens?: number;
   } | null;
   createdAt: string;
+  traceId?: string;
+  spans?: TraceSpan[];
 }
 
 export interface SystemInfo {

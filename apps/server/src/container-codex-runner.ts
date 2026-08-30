@@ -2,7 +2,7 @@ import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
 import type { AppConfig } from "./config.js";
 import { buildCodexArgs, parseCodexEventLine } from "./codex-runner.js";
-import { RunCancelledError } from "./errors.js";
+import { PolicyDeniedError, RunCancelledError } from "./errors.js";
 import type {
   AgentRunner,
   RunUsage,
@@ -175,6 +175,20 @@ export class ContainerCodexRunner implements AgentRunner {
     let stdout = "";
     let stderr = "";
     let totalBytes = 0;
+    let policyError: PolicyDeniedError | null = null;
+
+    const sink = (event: Record<string, unknown>) => {
+      try {
+        request.onCodexEvent?.(event);
+      } catch (error) {
+        if (error instanceof PolicyDeniedError) {
+          policyError = error;
+          void this.removeContainer(active);
+          return;
+        }
+        throw error;
+      }
+    };
 
     const consume = (chunk: Buffer, target: "stdout" | "stderr") => {
       totalBytes += chunk.byteLength;
@@ -187,7 +201,7 @@ export class ContainerCodexRunner implements AgentRunner {
         stdout += chunk.toString("utf8");
         const lines = stdout.split(/\r?\n/);
         stdout = lines.pop() ?? "";
-        for (const line of lines) parseCodexEventLine(line, parsed);
+        for (const line of lines) parseCodexEventLine(line, parsed, sink);
       } else {
         stderr += chunk.toString("utf8");
         if (stderr.length > 16_384) stderr = stderr.slice(-16_384);
@@ -208,7 +222,8 @@ export class ContainerCodexRunner implements AgentRunner {
         child.once("error", reject);
         child.once("close", (code) => resolve(code ?? 1));
       });
-      if (stdout.trim()) parseCodexEventLine(stdout.trim(), parsed);
+      if (stdout.trim()) parseCodexEventLine(stdout.trim(), parsed, sink);
+      if (policyError) throw policyError;
       if (active.cancelled) throw new RunCancelledError();
       if (active.timedOut) {
         throw new Error("Runtime timed out after " + this.config.codexTimeoutMs + " ms");

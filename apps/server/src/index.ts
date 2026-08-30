@@ -1,11 +1,14 @@
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { AgentService } from "./agent-service.js";
 import { createApp } from "./app.js";
 import { loadConfig, writeCodexConfig } from "./config.js";
+import { loadLocalEnv } from "./env-file.js";
 import { createRunner } from "./runner-factory.js";
 import { JsonStore } from "./store.js";
 import { WorkspaceManager } from "./workspace.js";
 
+loadLocalEnv(path.dirname(fileURLToPath(import.meta.url)));
 const config = loadConfig();
 await writeCodexConfig(config);
 

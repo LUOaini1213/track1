@@ -14,3 +14,13 @@ export class RunCancelledError extends Error {
     this.name = "RunCancelledError";
   }
 }
+
+export class PolicyDeniedError extends Error {
+  constructor(
+    public readonly ruleId: string,
+    message = "Policy denied: secret-exfiltration",
+  ) {
+    super(message);
+    this.name = "PolicyDeniedError";
+  }
+}
