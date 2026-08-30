@@ -6,7 +6,7 @@ import { AgentService } from "./agent-service.js";
 import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { JsonStore } from "./store.js";
-import type { AgentRunner, RunnerResult } from "./types.js";
+import type { AgentRunner, RunnerRequest, RunnerResult } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
 
 const temporaryDirectories: string[] = [];
@@ -83,12 +83,18 @@ describe("Glass Box HTTP path", () => {
       url: "/api/runs/" + happyRunId + "/trace",
     });
     expect(happyTrace.statusCode).toBe(200);
-    const happyNames = (happyTrace.json().spans as { name: string }[]).map(
-      (span) => span.name,
-    );
+    const happyBody = happyTrace.json() as {
+      spans: { name: string }[];
+      usage: { inputTokens?: number; outputTokens?: number } | null;
+      estimatedCostUsd: number | null;
+    };
+    const happyNames = happyBody.spans.map((span) => span.name);
     expect(happyNames).toContain("run.execute");
     expect(happyNames).toContain("policy.check");
     expect(happyNames).toContain("runtime.spawn");
+    expect(happyBody.usage).toEqual({ inputTokens: 3, outputTokens: 2 });
+    expect(typeof happyBody.estimatedCostUsd).toBe("number");
+    expect(happyBody.estimatedCostUsd).toBeGreaterThan(0);
     expect(runnerCalls).toBe(1);
 
     const deny = await app.inject({
@@ -114,6 +120,77 @@ describe("Glass Box HTTP path", () => {
       denySpans.some((span) => span.kind === "policy" && span.status === "denied"),
     ).toBe(true);
     expect(denyTrace.json().run.error).toContain("Policy denied");
+    await app.close();
+  });
+
+  it("persists a tool-error span on the HTTP trace when Codex reports exit_code 1", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "launchpad-http-tool-"));
+    temporaryDirectories.push(root);
+    const runner: AgentRunner = {
+      run: async (request: RunnerRequest) => {
+        request.onCodexEvent?.({
+          type: "item.completed",
+          item: {
+            id: "cmd-1",
+            type: "command_execution",
+            command: "npm test",
+            exit_code: 1,
+          },
+        });
+        const result: RunnerResult = {
+          output: "tests failed",
+          threadId: "thread-fail",
+          usage: { inputTokens: 8, outputTokens: 4 },
+        };
+        return result;
+      },
+      cancel: async () => false,
+      isAvailable: async () => true,
+    };
+    const config = loadConfig({
+      NODE_ENV: "test",
+      LOG_LEVEL: "silent",
+      APP_DATA_DIR: path.join(root, "data"),
+      AGENT_WORKSPACE_ROOT: path.join(root, "workspaces"),
+      CODEX_HOME: path.join(root, "codex"),
+      ARK_API_KEY: "test-key",
+      ARK_MODEL: "ep-test",
+    });
+    const service = new AgentService(
+      config,
+      new JsonStore(path.join(root, "data", "db.json")),
+      new WorkspaceManager(path.join(root, "workspaces")),
+      runner,
+    );
+    await service.initialize();
+    const app = await createApp(config, service);
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/agents",
+      payload: { name: "Tools" },
+    });
+    const agentId = created.json().agent.id as string;
+    const sent = await app.inject({
+      method: "POST",
+      url: "/api/agents/" + agentId + "/messages",
+      payload: { content: "run the tests" },
+    });
+    const runId = sent.json().run.id as string;
+    await expect.poll(() => service.getRun(runId).status).toBe("completed");
+    const trace = await app.inject({
+      method: "GET",
+      url: "/api/runs/" + runId + "/trace",
+    });
+    const spans = trace.json().spans as {
+      name: string;
+      status: string;
+      attributes: { exitCode?: number };
+    }[];
+    const command = spans.find((span) => span.name === "tool.command_execution");
+    expect(command?.status).toBe("error");
+    expect(command?.attributes.exitCode).toBe(1);
+    expect(trace.json().usage).toEqual({ inputTokens: 8, outputTokens: 4 });
+    expect(trace.json().estimatedCostUsd).toBeGreaterThan(0);
     await app.close();
   });
 });
