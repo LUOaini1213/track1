@@ -8,6 +8,7 @@ import {
 } from "./policy.js";
 import { redactText } from "./redact.js";
 import { JsonStore } from "./store.js";
+import { estimateCostUsd } from "./cost.js";
 import { TraceCollector } from "./trace.js";
 import type {
   Agent,
@@ -152,9 +153,22 @@ export class AgentService {
     run: AgentRun;
     traceId: string;
     spans: AgentRun["spans"];
+    usage: AgentRun["usage"];
+    estimatedCostUsd: number | null;
   } {
     const run = this.getRun(runId);
-    return { run, traceId: run.traceId, spans: run.spans };
+    return {
+      run,
+      traceId: run.traceId,
+      spans: run.spans,
+      usage: run.usage,
+      estimatedCostUsd: estimateCostUsd(run.usage),
+    };
+  }
+
+  async shutdown(): Promise<void> {
+    const ids = [...this.activeExecutions.keys()];
+    await Promise.all(ids.map((id) => this.cancelExecution(id)));
   }
 
   getRuns(agentId: string): AgentRun[] {
@@ -254,6 +268,7 @@ export class AgentService {
     runId: string,
     collector: TraceCollector,
   ): Promise<void> {
+    collector.flush();
     const spans = collector.snapshot();
     await this.store.mutate((database) => {
       const storedRun = database.runs.find((item) => item.id === runId);

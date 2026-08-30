@@ -100,9 +100,9 @@ describe("Codex runner protocol", () => {
         seen.push(String(event.type));
       },
     );
-    parseCodexEventLine("not-json", parsed, () => {
-      seen.push("should-not-run");
+    parseCodexEventLine("not-json", parsed, (event) => {
+      seen.push(String(event.type));
     });
-    expect(seen).toEqual(["item.completed"]);
+    expect(seen).toEqual(["item.completed", "unparsed_line"]);
   });
 });

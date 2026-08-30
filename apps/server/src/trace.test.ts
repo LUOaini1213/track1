@@ -40,4 +40,23 @@ describe("TraceCollector", () => {
     expect(names).toContain("tool.command_execution");
     expect(names).toContain("runtime.event");
   });
+
+  it("marks a command span as error when Codex reports a non-zero exit code", () => {
+    const collector = new TraceCollector("run-1", "agent-1");
+    const parent = collector.startSpan("runtime.spawn", "runtime", null);
+    collector.recordCodexEvent(parent, {
+      type: "item.completed",
+      item: {
+        id: "item-fail",
+        type: "command_execution",
+        command: "npm test",
+        exit_code: 1,
+      },
+    });
+    const command = collector
+      .snapshot()
+      .find((span) => span.name === "tool.command_execution");
+    expect(command?.status).toBe("error");
+    expect(command?.attributes.exitCode).toBe(1);
+  });
 });

@@ -35,40 +35,107 @@ function Spinner() {
   return <span className="spinner" aria-label="Loading" />;
 }
 
+type TraceFilter = "all" | "problems" | "model" | "tool" | "policy";
+
+function formatUsage(
+  usage: AgentRun["usage"],
+  estimatedCostUsd: number | null,
+): string | null {
+  const input = usage?.inputTokens ?? 0;
+  const output = usage?.outputTokens ?? 0;
+  if (input <= 0 && output <= 0 && estimatedCostUsd == null) {
+    return null;
+  }
+  const cost =
+    estimatedCostUsd != null ? " · est. $" + estimatedCostUsd.toFixed(6) : "";
+  return input + " in / " + output + " out tokens" + cost;
+}
+
 function TracePanel({
   spans,
   selectedId,
   onSelect,
+  usage,
+  estimatedCostUsd,
+  previousUsage,
+  onExport,
 }: {
   spans: TraceSpan[];
   selectedId: string | null;
   onSelect: (id: string) => void;
+  usage: AgentRun["usage"];
+  estimatedCostUsd: number | null;
+  previousUsage: AgentRun["usage"];
+  onExport: () => void;
 }) {
+  const [filter, setFilter] = useState<TraceFilter>("all");
   const failing = spans.find(
     (span) => span.status === "error" || span.status === "denied",
   );
   const selected = spans.find((span) => span.spanId === selectedId) ?? failing;
+  const visible = spans.filter((span) => {
+    if (filter === "problems") {
+      return span.status === "error" || span.status === "denied";
+    }
+    if (filter === "all") {
+      return true;
+    }
+    return span.kind === filter;
+  });
+  const usageLabel = formatUsage(usage, estimatedCostUsd);
+  const delta =
+    usage && previousUsage
+      ? (usage.inputTokens ?? 0) +
+        (usage.outputTokens ?? 0) -
+        ((previousUsage.inputTokens ?? 0) + (previousUsage.outputTokens ?? 0))
+      : null;
   return (
     <section className="trace-panel" aria-label="Run trace">
       <div className="trace-panel-header">
         <div>
           <span className="eyebrow">Trace Plane</span>
           <strong>Run timeline</strong>
+          {usageLabel ? <span className="trace-usage">{usageLabel}</span> : null}
+          {delta != null ? (
+            <span className="trace-usage">
+              vs previous run: {delta >= 0 ? "+" : ""}
+              {delta} tokens
+            </span>
+          ) : null}
         </div>
-        {failing ? (
-          <button
-            type="button"
-            className="button button-ghost"
-            onClick={() => onSelect(failing.spanId)}
-          >
-            Open failing step
+        <div className="trace-actions">
+          {failing ? (
+            <button
+              type="button"
+              className="button button-ghost"
+              onClick={() => onSelect(failing.spanId)}
+            >
+              Open failing step
+            </button>
+          ) : (
+            <span className="trace-count">{spans.length} spans</span>
+          )}
+          <button type="button" className="button button-ghost" onClick={onExport}>
+            Export JSON
           </button>
-        ) : (
-          <span className="trace-count">{spans.length} spans</span>
+        </div>
+      </div>
+      <div className="trace-filters" role="tablist" aria-label="Span filter">
+        {(["all", "problems", "model", "tool", "policy"] as TraceFilter[]).map(
+          (item) => (
+            <button
+              key={item}
+              type="button"
+              className={"trace-filter" + (filter === item ? " selected" : "")}
+              onClick={() => setFilter(item)}
+            >
+              {item}
+            </button>
+          ),
         )}
       </div>
       <ol className="trace-list">
-        {spans.map((span) => (
+        {visible.map((span) => (
           <li key={span.spanId}>
             <button
               type="button"
@@ -110,6 +177,9 @@ export default function App() {
   const [activeRun, setActiveRun] = useState<AgentRun | null>(null);
   const [spans, setSpans] = useState<TraceSpan[]>([]);
   const [selectedSpanId, setSelectedSpanId] = useState<string | null>(null);
+  const [runUsage, setRunUsage] = useState<AgentRun["usage"]>(null);
+  const [estimatedCostUsd, setEstimatedCostUsd] = useState<number | null>(null);
+  const [previousUsage, setPreviousUsage] = useState<AgentRun["usage"]>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [authRequired, setAuthRequired] = useState<boolean | null>(null);
@@ -165,6 +235,9 @@ export default function App() {
     setActiveRun(null);
     setSpans([]);
     setSelectedSpanId(null);
+    setRunUsage(null);
+    setEstimatedCostUsd(null);
+    setPreviousUsage(null);
     setShowSettings(false);
     if (!selectedId) {
       setMessages([]);
@@ -179,7 +252,11 @@ export default function App() {
           const trace = await api.trace(latest.id).catch(() => null);
           if (selectedIdRef.current === selectedId && trace) {
             setSpans(trace.spans);
+            setRunUsage(trace.usage);
+            setEstimatedCostUsd(trace.estimatedCostUsd);
           }
+          const previous = result.runs[1];
+          setPreviousUsage(previous?.usage ?? null);
         }
         if (latest && ["queued", "running"].includes(latest.status)) {
           void pollRun(latest.id, selectedId).catch((reason) =>
@@ -281,13 +358,14 @@ export default function App() {
       while (mountedRef.current) {
         await new Promise((resolve) => window.setTimeout(resolve, 900));
         if (!mountedRef.current) return;
-        const result = await api.run(runId);
-        const trace = await api.trace(runId).catch(() => null);
+        const trace = await api.trace(runId);
         if (selectedIdRef.current === agentId) {
-          setActiveRun(result.run);
-          if (trace) setSpans(trace.spans);
+          setActiveRun(trace.run);
+          setSpans(trace.spans);
+          setRunUsage(trace.usage);
+          setEstimatedCostUsd(trace.estimatedCostUsd);
         }
-        if (!["queued", "running"].includes(result.run.status)) {
+        if (!["queued", "running"].includes(trace.run.status)) {
           await Promise.all([refreshMessages(agentId), refreshAgents()]);
           return;
         }
@@ -625,6 +703,26 @@ export default function App() {
                   spans={spans}
                   selectedId={selectedSpanId}
                   onSelect={setSelectedSpanId}
+                  usage={runUsage}
+                  estimatedCostUsd={estimatedCostUsd}
+                  previousUsage={previousUsage}
+                  onExport={() => {
+                    const payload = {
+                      run: activeRun,
+                      spans,
+                      usage: runUsage,
+                      estimatedCostUsd,
+                    };
+                    const blob = new Blob([JSON.stringify(payload, null, 2)], {
+                      type: "application/json",
+                    });
+                    const url = URL.createObjectURL(blob);
+                    const link = document.createElement("a");
+                    link.href = url;
+                    link.download = "trace-" + (activeRun?.id ?? "run") + ".json";
+                    link.click();
+                    URL.revokeObjectURL(url);
+                  }}
                 />
               ) : null}
 

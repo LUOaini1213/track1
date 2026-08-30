@@ -79,7 +79,11 @@ export const api = {
     ),
   run: (id: string) => request<{ run: AgentRun }>("/api/runs/" + id),
   trace: (id: string) =>
-    request<{ run: AgentRun; traceId: string; spans: TraceSpan[] }>(
-      "/api/runs/" + id + "/trace",
-    ),
+    request<{
+      run: AgentRun;
+      traceId: string;
+      spans: TraceSpan[];
+      usage: AgentRun["usage"];
+      estimatedCostUsd: number | null;
+    }>("/api/runs/" + id + "/trace"),
 };

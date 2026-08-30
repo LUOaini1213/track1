@@ -28,7 +28,13 @@ Enforcement and instrumentation live **behind Fastify**, in `AgentService`,
 
 The local Docker/Podman container is still not a hardened multi-tenant
 boundary. Residual risk: a novel prompt may bypass the pattern denylist;
-unknown Codex item shapes are recorded as generic `runtime.event` spans.
+unknown Codex item shapes are recorded as generic `runtime.event` spans
+(with event `keys`, never the raw line). Command spans with a non-zero
+`exit_code` are `error` so **Open failing step** can land on a failed tool.
+
+The Playground surfaces available model token usage and an **estimated** USD
+cost, span filters, JSON export, and a token delta versus the previous Run.
+Span persistence is debounced; shutdown cancels in-flight Codex processes.
 
 ## Demo
 

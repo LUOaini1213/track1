@@ -60,6 +60,7 @@ export function parseCodexEventLine(
   try {
     event = JSON.parse(line) as Record<string, unknown>;
   } catch {
+    onEvent?.({ type: "unparsed_line", chars: line.trim().length });
     return;
   }
 

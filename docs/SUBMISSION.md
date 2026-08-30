@@ -39,7 +39,7 @@ On every Playground message the backend:
 3. If denied: persists a `policy.check` span with `status=denied`, fails the Run, **does not call the runner**, and leaves the fixture hash unchanged.
 4. If allowed: spawns Codex, maps JSON events into child spans (runtime / tool / sandbox / model), redacts attributes, and exposes `GET /api/runs/:id/trace`.
 
-The Playground Trace Plane panel lists kind, name, status, duration, and redacted attributes, with **Open failing step**.
+The Playground Trace Plane panel lists kind, name, status, duration, and redacted attributes, with **Open failing step**, token usage / estimated cost, span filters, JSON export, and a token delta versus the previous Run. Tool spans with a non-zero Codex `exit_code` are marked `error`.
 
 ### Why this is middleware, not a screen
 

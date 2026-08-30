@@ -22,6 +22,7 @@ const app = await createApp(config, service);
 
 const shutdown = async (signal: string) => {
   app.log.info({ signal }, "Shutting down");
+  await service.shutdown();
   await app.close();
   process.exit(0);
 };

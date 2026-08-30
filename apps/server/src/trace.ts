@@ -13,8 +13,37 @@ export class TraceCollector {
     private readonly runId: string,
     private readonly agentId: string,
     private readonly onChange?: (spans: TraceSpan[]) => void | Promise<void>,
+    private readonly persistDebounceMs = 40,
   ) {
     this.traceId = randomUUID();
+  }
+
+  private persistTimer: ReturnType<typeof setTimeout> | null = null;
+
+  private schedulePersist(): void {
+    if (!this.onChange) {
+      return;
+    }
+    if (this.persistDebounceMs <= 0) {
+      void this.onChange(this.snapshot());
+      return;
+    }
+    if (this.persistTimer) {
+      return;
+    }
+    this.persistTimer = setTimeout(() => {
+      this.persistTimer = null;
+      void this.onChange?.(this.snapshot());
+    }, this.persistDebounceMs);
+    this.persistTimer.unref?.();
+  }
+
+  flush(): void {
+    if (this.persistTimer) {
+      clearTimeout(this.persistTimer);
+      this.persistTimer = null;
+    }
+    void this.onChange?.(this.snapshot());
   }
 
   snapshot(): TraceSpan[] {
@@ -42,7 +71,7 @@ export class TraceCollector {
       durationMs: null,
       attributes: redactDeep(attributes),
     });
-    void this.onChange?.(this.snapshot());
+    this.schedulePersist();
     return spanId;
   }
 
@@ -63,7 +92,7 @@ export class TraceCollector {
       Date.parse(endedAt) - Date.parse(span.startedAt),
     );
     span.attributes = redactDeep({ ...span.attributes, ...attributes });
-    void this.onChange?.(this.snapshot());
+    this.schedulePersist();
   }
 
   recordCodexEvent(parentSpanId: string, event: Record<string, unknown>): void {
@@ -88,6 +117,7 @@ export class TraceCollector {
       const kind = kindForItem(itemType);
       const name = kind + "." + itemType;
       const attributes = itemAttributes(item);
+      const status = itemStatus(item);
       if (type === "item.started") {
         const spanId = this.startSpan(name, kind, parentSpanId, attributes);
         this.itemSpans.set(itemId, spanId);
@@ -95,11 +125,11 @@ export class TraceCollector {
       }
       const existing = this.itemSpans.get(itemId);
       if (existing) {
-        this.endSpan(existing, "ok", attributes);
+        this.endSpan(existing, status, attributes);
         return;
       }
       const spanId = this.startSpan(name, kind, parentSpanId, attributes);
-      this.endSpan(spanId, "ok");
+      this.endSpan(spanId, status);
       return;
     }
 
@@ -133,9 +163,20 @@ export class TraceCollector {
 
     const spanId = this.startSpan("runtime.event", "runtime", parentSpanId, {
       codexType: type,
+      keys: Object.keys(event).sort().join(","),
     });
     this.endSpan(spanId, "ok");
   }
+}
+
+function itemStatus(item: Record<string, unknown>): SpanStatus {
+  if (typeof item.exit_code === "number" && item.exit_code !== 0) {
+    return "error";
+  }
+  if (item.status === "failed" || item.status === "error") {
+    return "error";
+  }
+  return "ok";
 }
 
 function kindForItem(itemType: string): SpanKind {
@@ -168,5 +209,11 @@ function itemAttributes(
       typeof item.text === "string" ? item.text.length : null,
     exitCode:
       typeof item.exit_code === "number" ? item.exit_code : null,
+    retryOf:
+      typeof item.retry_of === "string"
+        ? item.retry_of
+        : typeof item.previous_item_id === "string"
+          ? item.previous_item_id
+          : null,
   };
 }

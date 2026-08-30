@@ -849,6 +849,43 @@ textarea:focus {
   font-size: 10px;
 }
 
+.trace-usage {
+  display: block;
+  color: #5f6b58;
+  font-size: 10px;
+  margin-top: 3px;
+}
+
+.trace-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.trace-filters {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.trace-filter {
+  border: 1px solid #e1dfd8;
+  background: white;
+  border-radius: 999px;
+  padding: 3px 8px;
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  color: #6f6f69;
+}
+
+.trace-filter.selected {
+  border-color: #b7aaee;
+  background: #f4f1ff;
+  color: #513db9;
+}
+
 .trace-list {
   list-style: none;
   margin: 0;

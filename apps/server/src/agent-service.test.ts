@@ -155,6 +155,8 @@ describe("Agent lifecycle", () => {
     expect(trace.spans.find((span) => span.name === "run.execute")?.status).toBe(
       "ok",
     );
+    expect(trace.usage).toEqual({ inputTokens: 12, outputTokens: 5 });
+    expect(trace.estimatedCostUsd).not.toBeNull();
   });
 
   it("identifies the failing runtime span when the runner throws", async () => {
