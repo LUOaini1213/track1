@@ -165,6 +165,7 @@ export class TraceCollector {
     const spanId = this.startSpan("runtime.event", "runtime", parentSpanId, {
       codexType: type,
       keys: Object.keys(event).sort().join(","),
+      chars: typeof event.chars === "number" ? event.chars : null,
     });
     this.endSpan(spanId, "ok");
   }

@@ -4,12 +4,25 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentService } from "./agent-service.js";
 import { createApp } from "./app.js";
+import { parseCodexEventLine } from "./codex-runner.js";
 import { loadConfig } from "./config.js";
 import { RunCancelledError } from "./errors.js";
 import { clearRegisteredSecrets } from "./redact.js";
 import { JsonStore } from "./store.js";
 import type { AgentRunner, RunnerRequest, RunnerResult } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
+
+function emitCodexLines(request: RunnerRequest, lines: string[]): void {
+  const parsed = {
+    messages: [] as string[],
+    threadId: null as string | null,
+    usage: null,
+    errors: [] as string[],
+  };
+  for (const line of lines) {
+    parseCodexEventLine(line, parsed, (event) => request.onCodexEvent?.(event));
+  }
+}
 
 const temporaryDirectories: string[] = [];
 
@@ -504,6 +517,162 @@ describe("Glass Box HTTP path", () => {
       url: "/api/runs/" + runId + "/trace",
     });
     expect(trace.json().run.status).toBe("cancelled");
+    await app.close();
+  });
+
+  it("records unparsed and unknown Codex lines without leaking raw payloads", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "launchpad-http-unknown-"));
+    temporaryDirectories.push(root);
+    const rawToken = "DISTINCTIVE_RAW_LINE_TOKEN";
+    const payloadToken = "DISTINCTIVE_PAYLOAD_TOKEN";
+    const runner: AgentRunner = {
+      run: async (request: RunnerRequest) => {
+        emitCodexLines(request, [
+          "not-json " + rawToken,
+          JSON.stringify({
+            type: "undocumented.event",
+            foo: payloadToken,
+            bar: 1,
+          }),
+        ]);
+        return {
+          output: "ok",
+          threadId: "thread-unknown",
+          usage: { inputTokens: 1, outputTokens: 1 },
+        };
+      },
+      cancel: async () => false,
+      isAvailable: async () => true,
+    };
+    const config = loadConfig({
+      NODE_ENV: "test",
+      LOG_LEVEL: "silent",
+      APP_DATA_DIR: path.join(root, "data"),
+      AGENT_WORKSPACE_ROOT: path.join(root, "workspaces"),
+      CODEX_HOME: path.join(root, "codex"),
+      ARK_API_KEY: "test-key",
+      ARK_MODEL: "ep-test",
+    });
+    const service = new AgentService(
+      config,
+      new JsonStore(path.join(root, "data", "db.json")),
+      new WorkspaceManager(path.join(root, "workspaces")),
+      runner,
+    );
+    await service.initialize();
+    const app = await createApp(config, service);
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/agents",
+      payload: { name: "Unknown" },
+    });
+    const agentId = created.json().agent.id as string;
+    const sent = await app.inject({
+      method: "POST",
+      url: "/api/agents/" + agentId + "/messages",
+      payload: { content: "continue" },
+    });
+    const runId = sent.json().run.id as string;
+    await expect.poll(() => service.getRun(runId).status).toBe("completed");
+    const trace = await app.inject({
+      method: "GET",
+      url: "/api/runs/" + runId + "/trace",
+    });
+    const body = JSON.stringify(trace.json());
+    expect(body).not.toContain(rawToken);
+    expect(body).not.toContain(payloadToken);
+    const spans = trace.json().spans as {
+      name: string;
+      attributes: { codexType?: string; keys?: string; chars?: number };
+    }[];
+    const unparsed = spans.find(
+      (span) => span.attributes.codexType === "unparsed_line",
+    );
+    const unknown = spans.find(
+      (span) => span.attributes.codexType === "undocumented.event",
+    );
+    expect(unparsed?.name).toBe("runtime.event");
+    expect(typeof unparsed?.attributes.chars).toBe("number");
+    expect(unknown?.attributes.keys).toContain("foo");
+    expect(unknown?.attributes.keys).toContain("bar");
+    await app.close();
+  });
+
+  it("keeps item start/complete as one child of the runtime spawn span", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "launchpad-http-pair-"));
+    temporaryDirectories.push(root);
+    const runner: AgentRunner = {
+      run: async (request: RunnerRequest) => {
+        request.onCodexEvent?.({
+          type: "item.started",
+          item: {
+            id: "item-1",
+            type: "command_execution",
+            command: "npm test",
+          },
+        });
+        request.onCodexEvent?.({
+          type: "item.completed",
+          item: {
+            id: "item-1",
+            type: "command_execution",
+            command: "npm test",
+            exit_code: 0,
+          },
+        });
+        return {
+          output: "ok",
+          threadId: "thread-pair",
+          usage: { inputTokens: 2, outputTokens: 1 },
+        };
+      },
+      cancel: async () => false,
+      isAvailable: async () => true,
+    };
+    const config = loadConfig({
+      NODE_ENV: "test",
+      LOG_LEVEL: "silent",
+      APP_DATA_DIR: path.join(root, "data"),
+      AGENT_WORKSPACE_ROOT: path.join(root, "workspaces"),
+      CODEX_HOME: path.join(root, "codex"),
+      ARK_API_KEY: "test-key",
+      ARK_MODEL: "ep-test",
+    });
+    const service = new AgentService(
+      config,
+      new JsonStore(path.join(root, "data", "db.json")),
+      new WorkspaceManager(path.join(root, "workspaces")),
+      runner,
+    );
+    await service.initialize();
+    const app = await createApp(config, service);
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/agents",
+      payload: { name: "Pair" },
+    });
+    const agentId = created.json().agent.id as string;
+    const sent = await app.inject({
+      method: "POST",
+      url: "/api/agents/" + agentId + "/messages",
+      payload: { content: "run tests" },
+    });
+    const runId = sent.json().run.id as string;
+    await expect.poll(() => service.getRun(runId).status).toBe("completed");
+    const trace = await app.inject({
+      method: "GET",
+      url: "/api/runs/" + runId + "/trace",
+    });
+    const spans = trace.json().spans as {
+      name: string;
+      spanId: string;
+      parentSpanId: string | null;
+    }[];
+    const runtime = spans.find((span) => span.name === "runtime.spawn");
+    const tools = spans.filter((span) => span.name === "tool.command_execution");
+    expect(runtime?.spanId).toBeTruthy();
+    expect(tools).toHaveLength(1);
+    expect(tools[0]?.parentSpanId).toBe(runtime?.spanId);
     await app.close();
   });
 });
