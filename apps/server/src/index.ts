@@ -4,12 +4,14 @@ import { AgentService } from "./agent-service.js";
 import { createApp } from "./app.js";
 import { loadConfig, writeCodexConfig } from "./config.js";
 import { loadLocalEnv } from "./env-file.js";
+import { registerSecrets } from "./redact.js";
 import { createRunner } from "./runner-factory.js";
 import { JsonStore } from "./store.js";
 import { WorkspaceManager } from "./workspace.js";
 
 loadLocalEnv(path.dirname(fileURLToPath(import.meta.url)));
 const config = loadConfig();
+registerSecrets([config.arkApiKey, config.authToken]);
 await writeCodexConfig(config);
 
 const store = new JsonStore(path.join(config.dataDirectory, "launchpad.json"));

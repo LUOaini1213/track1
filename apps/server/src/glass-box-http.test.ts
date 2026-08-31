@@ -5,6 +5,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { AgentService } from "./agent-service.js";
 import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
+import { RunCancelledError } from "./errors.js";
+import { clearRegisteredSecrets } from "./redact.js";
 import { JsonStore } from "./store.js";
 import type { AgentRunner, RunnerRequest, RunnerResult } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
@@ -12,6 +14,7 @@ import { WorkspaceManager } from "./workspace.js";
 const temporaryDirectories: string[] = [];
 
 afterEach(async () => {
+  clearRegisteredSecrets();
   const { rm } = await import("node:fs/promises");
   await Promise.all(
     temporaryDirectories.splice(0).map((directory) =>
@@ -319,6 +322,188 @@ describe("Glass Box HTTP path", () => {
     expect(failedSide?.failingSpan?.spanId).toBe(failed?.spanId);
     expect(failedSide?.failingSpan?.exitCode).toBe(1);
     expect(failedSide?.failingSpan?.command).toBe("npm test");
+    await app.close();
+  });
+
+  it("redacts a configured runtime secret from the HTTP run body", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "launchpad-http-secret-"));
+    temporaryDirectories.push(root);
+    const secret = "runtime-secret-token-xyz";
+    const runner: AgentRunner = {
+      run: async () => ({
+        output: "model echoed " + secret,
+        threadId: "thread-secret",
+        usage: { inputTokens: 2, outputTokens: 2 },
+      }),
+      cancel: async () => false,
+      isAvailable: async () => true,
+    };
+    const config = loadConfig({
+      NODE_ENV: "test",
+      LOG_LEVEL: "silent",
+      APP_DATA_DIR: path.join(root, "data"),
+      AGENT_WORKSPACE_ROOT: path.join(root, "workspaces"),
+      CODEX_HOME: path.join(root, "codex"),
+      ARK_API_KEY: secret,
+      ARK_MODEL: "ep-test",
+    });
+    const service = new AgentService(
+      config,
+      new JsonStore(path.join(root, "data", "db.json")),
+      new WorkspaceManager(path.join(root, "workspaces")),
+      runner,
+    );
+    await service.initialize();
+    const app = await createApp(config, service);
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/agents",
+      payload: { name: "Secret" },
+    });
+    const agentId = created.json().agent.id as string;
+    const sent = await app.inject({
+      method: "POST",
+      url: "/api/agents/" + agentId + "/messages",
+      payload: { content: "say hello" },
+    });
+    const runId = sent.json().run.id as string;
+    await expect.poll(() => service.getRun(runId).status).toBe("completed");
+    const trace = await app.inject({
+      method: "GET",
+      url: "/api/runs/" + runId + "/trace",
+    });
+    const body = JSON.stringify(trace.json());
+    expect(body).not.toContain(secret);
+    expect(trace.json().run.output).toContain("[REDACTED]");
+    await app.close();
+  });
+
+  it("denies a live command_execution on the shipped Run path", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "launchpad-http-live-"));
+    temporaryDirectories.push(root);
+    let finishedSuccessfully = false;
+    const runner: AgentRunner = {
+      run: async (request: RunnerRequest) => {
+        request.onCodexEvent?.({
+          type: "item.completed",
+          item: {
+            id: "live-1",
+            type: "command_execution",
+            command: "cat .secrets/demo.env",
+          },
+        });
+        finishedSuccessfully = true;
+        return {
+          output: "should-not-complete",
+          threadId: "thread-live",
+          usage: { inputTokens: 1, outputTokens: 1 },
+        };
+      },
+      cancel: async () => false,
+      isAvailable: async () => true,
+    };
+    const config = loadConfig({
+      NODE_ENV: "test",
+      LOG_LEVEL: "silent",
+      APP_DATA_DIR: path.join(root, "data"),
+      AGENT_WORKSPACE_ROOT: path.join(root, "workspaces"),
+      CODEX_HOME: path.join(root, "codex"),
+      ARK_API_KEY: "test-key",
+      ARK_MODEL: "ep-test",
+    });
+    const service = new AgentService(
+      config,
+      new JsonStore(path.join(root, "data", "db.json")),
+      new WorkspaceManager(path.join(root, "workspaces")),
+      runner,
+    );
+    await service.initialize();
+    const app = await createApp(config, service);
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/agents",
+      payload: { name: "LivePolicy" },
+    });
+    const agentId = created.json().agent.id as string;
+    const sent = await app.inject({
+      method: "POST",
+      url: "/api/agents/" + agentId + "/messages",
+      payload: { content: "inspect the workspace" },
+    });
+    const runId = sent.json().run.id as string;
+    await expect.poll(() => service.getRun(runId).status).toBe("failed");
+    expect(finishedSuccessfully).toBe(false);
+    const trace = await app.inject({
+      method: "GET",
+      url: "/api/runs/" + runId + "/trace",
+    });
+    const spans = trace.json().spans as { name: string; status: string }[];
+    expect(
+      spans.some((span) => span.name === "policy.live" && span.status === "denied"),
+    ).toBe(true);
+    expect(trace.json().run.output).not.toBe("should-not-complete");
+    expect(trace.json().run.error).toContain("Policy denied");
+    await app.close();
+  });
+
+  it("marks an in-flight Run cancelled when the Agent is stopped", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "launchpad-http-cancel-"));
+    temporaryDirectories.push(root);
+    let rejectRun: ((error: Error) => void) | null = null;
+    let started = false;
+    const runner: AgentRunner = {
+      run: () =>
+        new Promise<RunnerResult>((_resolve, reject) => {
+          rejectRun = reject;
+          started = true;
+        }),
+      cancel: async () => {
+        rejectRun?.(new RunCancelledError());
+        return true;
+      },
+      isAvailable: async () => true,
+    };
+    const config = loadConfig({
+      NODE_ENV: "test",
+      LOG_LEVEL: "silent",
+      APP_DATA_DIR: path.join(root, "data"),
+      AGENT_WORKSPACE_ROOT: path.join(root, "workspaces"),
+      CODEX_HOME: path.join(root, "codex"),
+      ARK_API_KEY: "test-key",
+      ARK_MODEL: "ep-test",
+    });
+    const service = new AgentService(
+      config,
+      new JsonStore(path.join(root, "data", "db.json")),
+      new WorkspaceManager(path.join(root, "workspaces")),
+      runner,
+    );
+    await service.initialize();
+    const app = await createApp(config, service);
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/agents",
+      payload: { name: "Cancel" },
+    });
+    const agentId = created.json().agent.id as string;
+    const sent = await app.inject({
+      method: "POST",
+      url: "/api/agents/" + agentId + "/messages",
+      payload: { content: "keep working" },
+    });
+    const runId = sent.json().run.id as string;
+    await expect.poll(() => started).toBe(true);
+    const stopped = await app.inject({
+      method: "POST",
+      url: "/api/agents/" + agentId + "/stop",
+    });
+    expect(stopped.statusCode).toBe(200);
+    await expect.poll(() => service.getRun(runId).status).toBe("cancelled");
+    const trace = await app.inject({
+      method: "GET",
+      url: "/api/runs/" + runId + "/trace",
+    });
+    expect(trace.json().run.status).toBe("cancelled");
     await app.close();
   });
 });

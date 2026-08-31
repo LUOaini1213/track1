@@ -1,4 +1,6 @@
 const REDACTED = "[REDACTED]";
+const MIN_CONFIGURED_SECRET_LENGTH = 12;
+const configuredSecrets = new Set<string>();
 
 const PATTERNS: RegExp[] = [
   /\bBearer\s+\S+/gi,
@@ -8,8 +10,26 @@ const PATTERNS: RegExp[] = [
   /\bFAKE_ARK_API_KEY\s*[=:]\s*\S+/gi,
 ];
 
+export function registerSecrets(values: Array<string | undefined | null>): void {
+  for (const value of values) {
+    const secret = value?.trim() ?? "";
+    if (secret.length >= MIN_CONFIGURED_SECRET_LENGTH) {
+      configuredSecrets.add(secret);
+    }
+  }
+}
+
+export function clearRegisteredSecrets(): void {
+  configuredSecrets.clear();
+}
+
 export function redactText(value: string): string {
   let next = value;
+  for (const secret of configuredSecrets) {
+    if (next.includes(secret)) {
+      next = next.split(secret).join(REDACTED);
+    }
+  }
   for (const pattern of PATTERNS) {
     next = next.replace(pattern, (match) => {
       const separator = match.match(/[=:]/);

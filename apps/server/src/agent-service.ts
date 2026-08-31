@@ -6,7 +6,7 @@ import {
   commandFromCodexEvent,
   inspectForSecretExfiltration,
 } from "./policy.js";
-import { redactText } from "./redact.js";
+import { redactText, registerSecrets } from "./redact.js";
 import { JsonStore } from "./store.js";
 import { estimateCostUsd } from "./cost.js";
 import { compareRuns } from "./run-compare.js";
@@ -32,7 +32,9 @@ export class AgentService {
     private readonly store: JsonStore,
     private readonly workspaces: WorkspaceManager,
     private readonly runner: AgentRunner,
-  ) {}
+  ) {
+    registerSecrets([config.arkApiKey, config.authToken]);
+  }
 
   async initialize(): Promise<void> {
     await this.store.initialize();
