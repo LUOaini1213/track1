@@ -33,8 +33,10 @@ unknown Codex item shapes are recorded as generic `runtime.event` spans
 `exit_code` are `error` so **Open failing step** can land on a failed tool.
 
 The Playground surfaces available model token usage and an **estimated** USD
-cost, span filters, JSON export, and a token delta versus the previous Run.
-Span persistence is debounced; shutdown cancels in-flight Codex processes.
+cost, span filters, JSON export, a token delta versus the previous Run, retry
+linkage (`retriedSpanId`), failing-step diagnostics, and a two-Run compare from
+`GET /api/agents/:id/runs/compare`. Span persistence is debounced; shutdown
+cancels in-flight Codex processes.
 
 ## Demo
 

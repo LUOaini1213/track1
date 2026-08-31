@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError, setAuthToken } from "./api";
-import type { Agent, AgentRun, Message, SystemInfo, TraceSpan } from "./types";
+import type {
+  Agent,
+  AgentRun,
+  Message,
+  RunCompareSide,
+  SystemInfo,
+  TraceSpan,
+} from "./types";
 
 const starterPrompts = [
   "Create a small TypeScript CLI that prints a weather summary from sample JSON.",
@@ -58,6 +65,7 @@ function TracePanel({
   usage,
   estimatedCostUsd,
   previousUsage,
+  compare,
   onExport,
 }: {
   spans: TraceSpan[];
@@ -66,6 +74,7 @@ function TracePanel({
   usage: AgentRun["usage"];
   estimatedCostUsd: number | null;
   previousUsage: AgentRun["usage"];
+  compare: { left: RunCompareSide; right: RunCompareSide } | null;
   onExport: () => void;
 }) {
   const [filter, setFilter] = useState<TraceFilter>("all");
@@ -100,6 +109,24 @@ function TracePanel({
             <span className="trace-usage">
               vs previous run: {delta >= 0 ? "+" : ""}
               {delta} tokens
+            </span>
+          ) : null}
+          {compare ? (
+            <span className="trace-usage">
+              compare {compare.left.runId.slice(0, 8)} (
+              {compare.left.durationMs ?? "?"}ms
+              {compare.left.failingSpan
+                ? "; fail " +
+                  (compare.left.failingSpan.command ?? compare.left.failingSpan.name)
+                : ""}
+              ) vs {compare.right.runId.slice(0, 8)} (
+              {compare.right.durationMs ?? "?"}ms
+              {compare.right.failingSpan
+                ? "; fail " +
+                  (compare.right.failingSpan.command ??
+                    compare.right.failingSpan.name)
+                : ""}
+              )
             </span>
           ) : null}
         </div>
@@ -158,6 +185,12 @@ function TracePanel({
       </ol>
       {selected ? (
         <pre className="trace-attributes">
+          {selected.attributes.failedStep
+            ? "failing step: " + String(selected.attributes.failedStep) + "\n"
+            : ""}
+          {selected.attributes.retriedSpanId
+            ? "retry of span " + String(selected.attributes.retriedSpanId) + "\n"
+            : ""}
           {JSON.stringify(selected.attributes, null, 2)}
         </pre>
       ) : null}
@@ -180,6 +213,10 @@ export default function App() {
   const [runUsage, setRunUsage] = useState<AgentRun["usage"]>(null);
   const [estimatedCostUsd, setEstimatedCostUsd] = useState<number | null>(null);
   const [previousUsage, setPreviousUsage] = useState<AgentRun["usage"]>(null);
+  const [runCompare, setRunCompare] = useState<{
+    left: RunCompareSide;
+    right: RunCompareSide;
+  } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [authRequired, setAuthRequired] = useState<boolean | null>(null);
@@ -238,6 +275,7 @@ export default function App() {
     setRunUsage(null);
     setEstimatedCostUsd(null);
     setPreviousUsage(null);
+    setRunCompare(null);
     setShowSettings(false);
     if (!selectedId) {
       setMessages([]);
@@ -257,6 +295,14 @@ export default function App() {
           }
           const previous = result.runs[1];
           setPreviousUsage(previous?.usage ?? null);
+          if (previous) {
+            const compared = await api
+              .compareRuns(selectedId)
+              .catch(() => null);
+            if (selectedIdRef.current === selectedId && compared) {
+              setRunCompare({ left: compared.left, right: compared.right });
+            }
+          }
         }
         if (latest && ["queued", "running"].includes(latest.status)) {
           void pollRun(latest.id, selectedId).catch((reason) =>
@@ -706,6 +752,7 @@ export default function App() {
                   usage={runUsage}
                   estimatedCostUsd={estimatedCostUsd}
                   previousUsage={previousUsage}
+                  compare={runCompare}
                   onExport={() => {
                     const payload = {
                       run: activeRun,

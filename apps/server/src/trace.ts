@@ -116,7 +116,7 @@ export class TraceCollector {
       const itemType = typeof item.type === "string" ? item.type : "item";
       const kind = kindForItem(itemType);
       const name = kind + "." + itemType;
-      const attributes = itemAttributes(item);
+      const attributes = this.withRetryLink(itemAttributes(item), item);
       const status = itemStatus(item);
       if (type === "item.started") {
         const spanId = this.startSpan(name, kind, parentSpanId, attributes);
@@ -129,6 +129,7 @@ export class TraceCollector {
         return;
       }
       const spanId = this.startSpan(name, kind, parentSpanId, attributes);
+      this.itemSpans.set(itemId, spanId);
       this.endSpan(spanId, status);
       return;
     }
@@ -167,6 +168,22 @@ export class TraceCollector {
     });
     this.endSpan(spanId, "ok");
   }
+
+  private withRetryLink(
+    attributes: TraceSpan["attributes"],
+    item: Record<string, unknown>,
+  ): TraceSpan["attributes"] {
+    const retryOfItem = retrySourceId(item);
+    if (!retryOfItem) {
+      return attributes;
+    }
+    const retriedSpanId = this.itemSpans.get(retryOfItem) ?? null;
+    return {
+      ...attributes,
+      retryOfItemId: retryOfItem,
+      retriedSpanId,
+    };
+  }
 }
 
 function itemStatus(item: Record<string, unknown>): SpanStatus {
@@ -192,6 +209,27 @@ function kindForItem(itemType: string): SpanKind {
   return "runtime";
 }
 
+function retrySourceId(item: Record<string, unknown>): string | null {
+  if (typeof item.retry_of === "string") {
+    return item.retry_of;
+  }
+  if (typeof item.previous_item_id === "string") {
+    return item.previous_item_id;
+  }
+  return null;
+}
+
+function firstString(
+  ...values: unknown[]
+): string | null {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) {
+      return value.slice(0, 240);
+    }
+  }
+  return null;
+}
+
 function itemAttributes(
   item: Record<string, unknown>,
 ): TraceSpan["attributes"] {
@@ -202,6 +240,15 @@ function itemAttributes(
       : typeof item.text === "string"
         ? item.text.slice(0, 180)
         : null;
+  const failed = itemStatus(item) === "error";
+  const errorText = failed
+    ? firstString(
+        item.stderr,
+        item.error,
+        item.aggregated_output,
+        item.output,
+      )
+    : null;
   return {
     itemType: typeof item.type === "string" ? item.type : null,
     command,
@@ -209,11 +256,12 @@ function itemAttributes(
       typeof item.text === "string" ? item.text.length : null,
     exitCode:
       typeof item.exit_code === "number" ? item.exit_code : null,
-    retryOf:
-      typeof item.retry_of === "string"
-        ? item.retry_of
-        : typeof item.previous_item_id === "string"
-          ? item.previous_item_id
-          : null,
+    errorText,
+    failedStep: failed
+      ? (command ?? "command") +
+        (typeof item.exit_code === "number"
+          ? " (exit " + String(item.exit_code) + ")"
+          : "")
+      : command,
   };
 }

@@ -58,5 +58,38 @@ describe("TraceCollector", () => {
       .find((span) => span.name === "tool.command_execution");
     expect(command?.status).toBe("error");
     expect(command?.attributes.exitCode).toBe(1);
+    expect(command?.attributes.command).toBe("npm test");
+    expect(command?.attributes.failedStep).toContain("exit 1");
+  });
+
+  it("links a retry item to the earlier span id", () => {
+    const collector = new TraceCollector("run-1", "agent-1");
+    const parent = collector.startSpan("runtime.spawn", "runtime", null);
+    collector.recordCodexEvent(parent, {
+      type: "item.completed",
+      item: {
+        id: "item-a",
+        type: "command_execution",
+        command: "npm test",
+        exit_code: 1,
+        stderr: "failing test",
+      },
+    });
+    collector.recordCodexEvent(parent, {
+      type: "item.completed",
+      item: {
+        id: "item-b",
+        type: "command_execution",
+        command: "npm test",
+        exit_code: 0,
+        retry_of: "item-a",
+      },
+    });
+    const spans = collector.snapshot();
+    const first = spans.find((span) => span.attributes.exitCode === 1);
+    const retry = spans.find((span) => span.attributes.retriedSpanId);
+    expect(first?.spanId).toBeTruthy();
+    expect(retry?.attributes.retriedSpanId).toBe(first?.spanId);
+    expect(first?.attributes.errorText).toBe("failing test");
   });
 });

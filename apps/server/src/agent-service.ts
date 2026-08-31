@@ -9,6 +9,7 @@ import {
 import { redactText } from "./redact.js";
 import { JsonStore } from "./store.js";
 import { estimateCostUsd } from "./cost.js";
+import { compareRuns } from "./run-compare.js";
 import { TraceCollector } from "./trace.js";
 import type {
   Agent,
@@ -177,6 +178,35 @@ export class AgentService {
       .snapshot()
       .runs.filter((run) => run.agentId === agentId)
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+  }
+
+  compareAgentRuns(
+    agentId: string,
+    leftId?: string,
+    rightId?: string,
+  ): {
+    agentId: string;
+    left: ReturnType<typeof compareRuns>["left"];
+    right: ReturnType<typeof compareRuns>["right"];
+  } {
+    const runs = this.getRuns(agentId);
+    const pick = (id: string | undefined, fallback: AgentRun | undefined) => {
+      if (!id) {
+        return fallback;
+      }
+      const match = runs.find((run) => run.id === id);
+      if (!match) {
+        throw new HttpError(404, "Run not found for this Agent");
+      }
+      return match;
+    };
+    const left = pick(leftId, runs[1]);
+    const right = pick(rightId, runs[0]);
+    if (!left || !right) {
+      throw new HttpError(404, "Need two Runs on this Agent to compare");
+    }
+    const compared = compareRuns(left, right);
+    return { agentId, ...compared };
   }
 
   async sendMessage(

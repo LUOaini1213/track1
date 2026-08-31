@@ -65,6 +65,23 @@ export interface AgentRun {
   spans?: TraceSpan[];
 }
 
+export interface RunCompareSide {
+  runId: string;
+  status: RunStatus;
+  durationMs: number | null;
+  usage: AgentRun["usage"];
+  estimatedCostUsd: number | null;
+  failingSpan: {
+    spanId: string;
+    name: string;
+    kind: string;
+    status: string;
+    command: string | null;
+    exitCode: number | null;
+    errorText: string | null;
+  } | null;
+}
+
 export interface SystemInfo {
   arkConfigured: boolean;
   arkBaseUrl: string;

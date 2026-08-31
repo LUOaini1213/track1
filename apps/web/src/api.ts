@@ -1,4 +1,11 @@
-import type { Agent, AgentRun, Message, SystemInfo, TraceSpan } from "./types";
+import type {
+  Agent,
+  AgentRun,
+  Message,
+  RunCompareSide,
+  SystemInfo,
+  TraceSpan,
+} from "./types";
 
 export class ApiError extends Error {
   constructor(
@@ -86,4 +93,15 @@ export const api = {
       usage: AgentRun["usage"];
       estimatedCostUsd: number | null;
     }>("/api/runs/" + id + "/trace"),
+  compareRuns: (agentId: string, left?: string, right?: string) => {
+    const query = new URLSearchParams();
+    if (left) query.set("left", left);
+    if (right) query.set("right", right);
+    const suffix = query.toString() ? "?" + query.toString() : "";
+    return request<{
+      agentId: string;
+      left: RunCompareSide;
+      right: RunCompareSide;
+    }>("/api/agents/" + agentId + "/runs/compare" + suffix);
+  },
 };

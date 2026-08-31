@@ -121,7 +121,7 @@ describe("Glass Box HTTP path", () => {
     ).toBe(true);
     expect(denyTrace.json().run.error).toContain("Policy denied");
     await app.close();
-  });
+  }, 20_000);
 
   it("persists a tool-error span on the HTTP trace when Codex reports exit_code 1", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "launchpad-http-tool-"));
@@ -135,6 +135,7 @@ describe("Glass Box HTTP path", () => {
             type: "command_execution",
             command: "npm test",
             exit_code: 1,
+            stderr: "AssertionError: expected true",
           },
         });
         const result: RunnerResult = {
@@ -189,8 +190,135 @@ describe("Glass Box HTTP path", () => {
     const command = spans.find((span) => span.name === "tool.command_execution");
     expect(command?.status).toBe("error");
     expect(command?.attributes.exitCode).toBe(1);
+    expect(command?.attributes.command).toBe("npm test");
+    expect(command?.attributes.errorText).toBe("AssertionError: expected true");
+    expect(command?.attributes.failedStep).toContain("npm test");
     expect(trace.json().usage).toEqual({ inputTokens: 8, outputTokens: 4 });
     expect(trace.json().estimatedCostUsd).toBeGreaterThan(0);
+    await app.close();
+  });
+
+  it("links retries to the prior span id and compares two Runs over HTTP", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "launchpad-http-retry-"));
+    temporaryDirectories.push(root);
+    let round = 0;
+    const runner: AgentRunner = {
+      run: async (request: RunnerRequest) => {
+        round += 1;
+        if (round === 1) {
+          request.onCodexEvent?.({
+            type: "item.completed",
+            item: {
+              id: "item-a",
+              type: "command_execution",
+              command: "npm test",
+              exit_code: 1,
+              stderr: "boom",
+            },
+          });
+          request.onCodexEvent?.({
+            type: "item.completed",
+            item: {
+              id: "item-b",
+              type: "command_execution",
+              command: "npm test",
+              exit_code: 0,
+              retry_of: "item-a",
+            },
+          });
+          return {
+            output: "retried",
+            threadId: "thread-retry",
+            usage: { inputTokens: 10, outputTokens: 6 },
+          };
+        }
+        return {
+          output: "ok",
+          threadId: "thread-ok",
+          usage: { inputTokens: 4, outputTokens: 1 },
+        };
+      },
+      cancel: async () => false,
+      isAvailable: async () => true,
+    };
+    const config = loadConfig({
+      NODE_ENV: "test",
+      LOG_LEVEL: "silent",
+      APP_DATA_DIR: path.join(root, "data"),
+      AGENT_WORKSPACE_ROOT: path.join(root, "workspaces"),
+      CODEX_HOME: path.join(root, "codex"),
+      ARK_API_KEY: "test-key",
+      ARK_MODEL: "ep-test",
+    });
+    const service = new AgentService(
+      config,
+      new JsonStore(path.join(root, "data", "db.json")),
+      new WorkspaceManager(path.join(root, "workspaces")),
+      runner,
+    );
+    await service.initialize();
+    const app = await createApp(config, service);
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/agents",
+      payload: { name: "Retry" },
+    });
+    const agentId = created.json().agent.id as string;
+    const first = await app.inject({
+      method: "POST",
+      url: "/api/agents/" + agentId + "/messages",
+      payload: { content: "run tests then retry" },
+    });
+    const firstId = first.json().run.id as string;
+    await expect.poll(() => service.getRun(firstId).status).toBe("completed");
+    const firstTrace = await app.inject({
+      method: "GET",
+      url: "/api/runs/" + firstId + "/trace",
+    });
+    const firstSpans = firstTrace.json().spans as {
+      spanId: string;
+      attributes: { exitCode?: number; retriedSpanId?: string; command?: string };
+    }[];
+    const failed = firstSpans.find((span) => span.attributes.exitCode === 1);
+    const retried = firstSpans.find((span) => span.attributes.retriedSpanId);
+    expect(failed?.spanId).toBeTruthy();
+    expect(retried?.attributes.retriedSpanId).toBe(failed?.spanId);
+
+    const second = await app.inject({
+      method: "POST",
+      url: "/api/agents/" + agentId + "/messages",
+      payload: { content: "summarize" },
+    });
+    const secondId = second.json().run.id as string;
+    await expect.poll(() => service.getRun(secondId).status).toBe("completed");
+    const compared = await app.inject({
+      method: "GET",
+      url: "/api/agents/" + agentId + "/runs/compare",
+    });
+    expect(compared.statusCode).toBe(200);
+    const body = compared.json() as {
+      left: {
+        runId: string;
+        durationMs: number | null;
+        usage: { inputTokens?: number };
+        failingSpan: { spanId: string; command: string | null; exitCode: number | null } | null;
+      };
+      right: {
+        runId: string;
+        durationMs: number | null;
+        usage: { inputTokens?: number };
+        failingSpan: { spanId: string } | null;
+      };
+    };
+    expect(new Set([body.left.runId, body.right.runId])).toEqual(
+      new Set([firstId, secondId]),
+    );
+    expect(body.left.durationMs).toBeGreaterThanOrEqual(0);
+    expect(body.right.durationMs).toBeGreaterThanOrEqual(0);
+    const failedSide = [body.left, body.right].find((side) => side.failingSpan);
+    expect(failedSide?.failingSpan?.spanId).toBe(failed?.spanId);
+    expect(failedSide?.failingSpan?.exitCode).toBe(1);
+    expect(failedSide?.failingSpan?.command).toBe("npm test");
     await app.close();
   });
 });

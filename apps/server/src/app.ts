@@ -116,6 +116,17 @@ export async function createApp(
     return { runs: service.getRuns(id) };
   });
 
+  app.get("/api/agents/:id/runs/compare", async (request) => {
+    const { id } = agentIdParams.parse(request.params);
+    const query = z
+      .object({
+        left: z.string().uuid().optional(),
+        right: z.string().uuid().optional(),
+      })
+      .parse(request.query);
+    return service.compareAgentRuns(id, query.left, query.right);
+  });
+
   app.post("/api/agents/:id/messages", async (request, reply) => {
     const { id } = agentIdParams.parse(request.params);
     const body = messageBody.parse(request.body);
