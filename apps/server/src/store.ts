@@ -59,6 +59,21 @@ export class JsonStore {
     return structuredClone(this.data);
   }
 
+  /**
+   * Clone only what the caller asked for.
+   *
+   * `snapshot()` deep-clones the entire database, so answering "give me one
+   * Run" used to copy every Agent, every message and every span in the store.
+   * The Playground polls an active Run roughly once a second, which made the
+   * cost of a single read grow with total history rather than with the Run.
+   *
+   * The selector runs against live data and must not mutate it; only its
+   * result crosses the boundary, and that result is cloned.
+   */
+  read<T>(selector: (database: Database) => T): T {
+    return structuredClone(selector(this.data));
+  }
+
   async mutate<T>(mutation: (database: Database) => T | Promise<T>): Promise<T> {
     let result!: T;
     const operation = this.queue.then(async () => {

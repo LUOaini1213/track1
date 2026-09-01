@@ -53,4 +53,28 @@ describe("JsonStore", () => {
       "queue recovered",
     ]);
   });
+
+  it("read() returns a copy, so callers cannot mutate stored state", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "store-read-"));
+    const store = new JsonStore(path.join(directory, "db.json"));
+    await store.initialize();
+    await store.mutate((database) => {
+      database.agents.push({
+        id: "a1",
+        name: "Builder",
+        description: "",
+        instructions: "",
+        status: "ready",
+        workspacePath: "/tmp/a1",
+        codexThreadId: null,
+        lastError: null,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      });
+    });
+    const agent = store.read((database) => database.agents[0]);
+    agent!.name = "Tampered";
+    expect(store.read((database) => database.agents[0])!.name).toBe("Builder");
+    await rm(directory, { recursive: true, force: true });
+  });
 });

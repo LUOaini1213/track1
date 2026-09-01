@@ -97,12 +97,14 @@ export class AgentService {
 
   listAgents(): Agent[] {
     return this.store
-      .snapshot()
-      .agents.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+      .read((database) => database.agents)
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
   }
 
   getAgent(id: string): Agent {
-    const agent = this.store.snapshot().agents.find((item) => item.id === id);
+    const agent = this.store.read((database) =>
+      database.agents.find((item) => item.id === id),
+    );
     if (!agent) {
       throw new HttpError(404, "Agent not found");
     }
@@ -178,13 +180,16 @@ export class AgentService {
   getMessages(agentId: string): Message[] {
     this.getAgent(agentId);
     return this.store
-      .snapshot()
-      .messages.filter((message) => message.agentId === agentId)
+      .read((database) =>
+        database.messages.filter((message) => message.agentId === agentId),
+      )
       .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
   }
 
   getRun(runId: string): AgentRun {
-    const run = this.store.snapshot().runs.find((item) => item.id === runId);
+    const run = this.store.read((database) =>
+      database.runs.find((item) => item.id === runId),
+    );
     if (!run) {
       throw new HttpError(404, "Run not found");
     }
@@ -216,8 +221,7 @@ export class AgentService {
   getRuns(agentId: string): AgentRun[] {
     this.getAgent(agentId);
     return this.store
-      .snapshot()
-      .runs.filter((run) => run.agentId === agentId)
+      .read((database) => database.runs.filter((run) => run.agentId === agentId))
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
   }
 

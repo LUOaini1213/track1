@@ -21,6 +21,21 @@ const CONTENT_ATTRIBUTE_KEYS = [
 
 const CONTENT_WITHHELD = "[content capture disabled]";
 
+/**
+ * How long to coalesce span writes before persisting mid-Run.
+ *
+ * Every interim persist rewrites the whole store, so its cost grows with total
+ * history, not with this Run: measured at 2.5ms for a 63KB store but 237ms at
+ * 18MB. The only consumer of these interim writes is the Playground, which
+ * polls an active Run every 900ms — so a 40ms debounce was firing roughly 22
+ * times per poll to produce state nobody read, and at scale the writes could
+ * not keep up with the interval that scheduled them.
+ *
+ * 300ms still lands several updates inside every poll while cutting the write
+ * volume ~7x. The authoritative write is `persistTrace` at the end of the Run.
+ */
+const PERSIST_DEBOUNCE_MS = 300;
+
 export interface TraceCollectorOptions {
   onChange?: (spans: TraceSpan[]) => void | Promise<void>;
   persistDebounceMs?: number;
@@ -48,7 +63,7 @@ export class TraceCollector {
   ) {
     this.traceId = randomUUID();
     this.onChange = options.onChange;
-    this.persistDebounceMs = options.persistDebounceMs ?? 40;
+    this.persistDebounceMs = options.persistDebounceMs ?? PERSIST_DEBOUNCE_MS;
     this.modelName = options.modelName ?? null;
     this.captureContent = options.captureContent ?? true;
   }
@@ -265,6 +280,13 @@ function itemStatus(item: Record<string, unknown>): SpanStatus {
   if (item.status === "failed" || item.status === "error") {
     return "error";
   }
+  // Codex also surfaces errors as an item whose *type* is "error", carrying a
+  // message and nothing else. `status` is absent on those, so checking it is
+  // not enough. The Run itself can still complete — an errored span under a
+  // successful root is exactly what a waterfall is for.
+  if (item.type === "error") {
+    return "error";
+  }
   return "ok";
 }
 
@@ -356,6 +378,7 @@ function itemAttributes(
   const failed = itemStatus(item) === "error";
   const errorText = failed
     ? firstString(
+        item.message,
         item.stderr,
         item.error,
         item.aggregated_output,
@@ -370,8 +393,10 @@ function itemAttributes(
     exitCode:
       typeof item.exit_code === "number" ? item.exit_code : null,
     errorText,
+    // Never fall back to the bare word "command": an error item has no command,
+    // and "failing step: command" is worse than saying what actually happened.
     failedStep: failed
-      ? (command ?? "command") +
+      ? (command ?? errorText ?? String(item.type ?? "step")) +
         (typeof item.exit_code === "number"
           ? " (exit " + String(item.exit_code) + ")"
           : "")

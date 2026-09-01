@@ -138,4 +138,28 @@ describe("TraceCollector", () => {
     expect(retry?.attributes.retriedSpanId).toBe(first?.spanId);
     expect(first?.attributes.errorText).toBe("failing test");
   });
+
+  it("surfaces a Codex error item as an errored span with its message", () => {
+    const collector = new TraceCollector("run-1", "agent-1");
+    const parent = collector.startSpan("runtime.spawn", "runtime", null);
+    collector.recordCodexEvent(parent, {
+      type: "item.completed",
+      item: {
+        id: "err-1",
+        type: "error",
+        message: "stream disconnected before completion",
+      },
+    });
+    const span = collector.snapshot().find((s) => s.name === "runtime.error");
+    // The item carries no `status` field, so checking status alone missed it
+    // and the span was recorded green with every attribute null.
+    expect(span?.status).toBe("error");
+    expect(span?.attributes.errorText).toBe(
+      "stream disconnected before completion",
+    );
+    // Never the bare word "command" — an error item has no command.
+    expect(span?.attributes.failedStep).toBe(
+      "stream disconnected before completion",
+    );
+  });
 });

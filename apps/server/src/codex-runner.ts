@@ -248,7 +248,9 @@ export class CodexRunner implements AgentRunner {
         throw new Error("Codex output exceeded CODEX_MAX_OUTPUT_BYTES");
       }
       if (exitCode !== 0) {
-        const detail = parsed.errors.at(-1) ?? stderr.trim() ?? "No error detail";
+        // `??` never reached the last branch: String.trim() returns "", not nullish,
+        // so an empty stderr produced a dangling "Codex exited with code 1: ".
+        const detail = parsed.errors.at(-1) || stderr.trim() || "No error detail";
         throw new Error("Codex exited with code " + exitCode + ": " + detail);
       }
       const output = parsed.messages.at(-1)?.trim();
