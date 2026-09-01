@@ -2,6 +2,8 @@
 
 **Selected track: Glass Box (trace and audit)**
 
+**[▶ 3-minute demo video](https://youtu.be/ARw1wfMX-JU)** · Repository: <https://github.com/LUOaini1213/track1>
+
 Devpost paste pack (English description, demo script, submit clicks): [docs/SUBMISSION.md](docs/SUBMISSION.md).
 One-page architecture: [docs/TRACE_PLANE.md](docs/TRACE_PLANE.md).
 

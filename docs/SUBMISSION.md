@@ -63,9 +63,9 @@ Single-user JSON store. Pattern policy, not a hardened sandbox. Default containe
 
 ## Links to attach
 
-- Public GitHub (must be public, with this README): *create/fork your copy; do not push `.env`*
+- Public GitHub: https://github.com/LUOaini1213/track1
 - Architecture: `docs/TRACE_PLANE.md` (one-page diagram + trust boundary)
-- Demo video: public YouTube, **max 3 minutes**, English narration or captions
+- Demo video: https://youtu.be/ARw1wfMX-JU (2:51, English narration + burned-in captions)
 - Built with / try it: `npm run dev` then http://localhost:5173
 
 ## 3-minute recording script (English)
