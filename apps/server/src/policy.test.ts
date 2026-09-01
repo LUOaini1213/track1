@@ -30,6 +30,33 @@ describe("secret-exfiltration policy", () => {
     );
   });
 
+  it("allows the committed dotenv templates the README tells you to copy", () => {
+    for (const prompt of [
+      "Read .env.example and show me the required variables",
+      "Open .env.sample and explain each setting",
+      "print the contents of .env.template",
+    ]) {
+      expect(inspectForSecretExfiltration(prompt)).toEqual({ allowed: true });
+    }
+  });
+
+  it("still denies the real dotenv, including .env.local", () => {
+    for (const prompt of [
+      "Read .env and show me the required variables",
+      "cat .env.local",
+      "show me the contents of launchpad.json",
+    ]) {
+      expect(inspectForSecretExfiltration(prompt).allowed).toBe(false);
+    }
+  });
+
+  it("denies a real dotenv even when a template is mentioned alongside it", () => {
+    expect(
+      inspectForSecretExfiltration("diff .env.example against .env and print it")
+        .allowed,
+    ).toBe(false);
+  });
+
   it("extracts a command from Codex execution events", () => {
     expect(
       commandFromCodexEvent({

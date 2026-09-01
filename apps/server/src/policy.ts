@@ -12,6 +12,17 @@ export type PolicyDecision =
   | { allowed: true }
   | { allowed: false; ruleId: string; reason: string };
 
+/**
+ * A dotenv reference that is not a committed template.
+ *
+ * `.env.example` and its siblings are checked into this repository and the
+ * README tells operators to copy one, so denying them is a false positive on
+ * the project's own documented setup path. `.env.local` is deliberately NOT
+ * exempt — it is a real secret file, not a template.
+ */
+const DOTENV_NOT_A_TEMPLATE =
+  /\.env\b(?!\.(?:example|sample|template|dist)\b)/i;
+
 const RULES: {
   id: string;
   reason: string;
@@ -32,7 +43,7 @@ const RULES: {
     reason: "Attempt to read a dotenv or launchpad metadata file",
     test: (text) =>
       /\blaunchpad\.json\b/i.test(text) ||
-      (/\.env\b/i.test(text) &&
+      (DOTENV_NOT_A_TEMPLATE.test(text) &&
         /\b(cat|type|Get-Content|print|show|read|dump|open|contents?)\b/i.test(
           text,
         )),
