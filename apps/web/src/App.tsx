@@ -42,7 +42,58 @@ function Spinner() {
   return <span className="spinner" aria-label="Loading" />;
 }
 
-type TraceFilter = "all" | "problems" | "model" | "tool" | "policy";
+type TraceFilter =
+  | "all"
+  | "problems"
+  | "llm"
+  | "tool"
+  | "policy"
+  | "sandbox";
+
+// Mirrors pickFailingSpan in apps/server/src/run-compare.ts. A failure marks
+// every span on the path to it, but run.execute and runtime.spawn are wrappers
+// with no diagnostics, so "Open failing step" must land on the innermost span
+// that actually explains the failure.
+const DIAGNOSTIC_KEYS = [
+  "errorText",
+  "exitCode",
+  "reason",
+  "ruleId",
+  "error",
+  "failedStep",
+];
+
+function pickFailingSpan(spans: TraceSpan[]): TraceSpan | undefined {
+  const problems = spans.filter(
+    (span) => span.status === "error" || span.status === "denied",
+  );
+  if (problems.length === 0) {
+    return undefined;
+  }
+  const byId = new Map(spans.map((span) => [span.spanId, span]));
+  const depthOf = (span: TraceSpan): number => {
+    let depth = 0;
+    let current: TraceSpan | undefined = span;
+    const seen = new Set<string>();
+    while (current?.parentSpanId && !seen.has(current.spanId)) {
+      seen.add(current.spanId);
+      current = byId.get(current.parentSpanId);
+      depth += 1;
+    }
+    return depth;
+  };
+  const ranked = [...problems].sort(
+    (left, right) => depthOf(right) - depthOf(left),
+  );
+  return (
+    ranked.find((span) =>
+      DIAGNOSTIC_KEYS.some((key) => {
+        const value = span.attributes[key];
+        return value !== undefined && value !== null;
+      }),
+    ) ?? ranked[0]
+  );
+}
 
 function formatUsage(
   usage: AgentRun["usage"],
@@ -56,6 +107,58 @@ function formatUsage(
   const cost =
     estimatedCostUsd != null ? " · est. $" + estimatedCostUsd.toFixed(6) : "";
   return input + " in / " + output + " out tokens" + cost;
+}
+
+/**
+ * Waterfall geometry. Depth and the time base are computed over the FULL span
+ * list, never the filtered one — filtering must not re-flatten the hierarchy or
+ * re-scale the bars.
+ */
+interface SpanLayout {
+  depth: number;
+  offsetPercent: number;
+  widthPercent: number;
+  hasChildren: boolean;
+}
+
+function layoutSpans(spans: TraceSpan[]): Map<string, SpanLayout> {
+  const layout = new Map<string, SpanLayout>();
+  if (spans.length === 0) {
+    return layout;
+  }
+  const byId = new Map(spans.map((span) => [span.spanId, span]));
+  const parents = new Set(
+    spans.map((span) => span.parentSpanId).filter((id): id is string => !!id),
+  );
+  const starts = spans.map((span) => Date.parse(span.startedAt));
+  const base = Math.min(...starts);
+  const end = Math.max(
+    ...spans.map((span) =>
+      span.endedAt ? Date.parse(span.endedAt) : Date.parse(span.startedAt),
+    ),
+  );
+  // A trace that starts and ends inside the same millisecond would divide by
+  // zero; clamp so every bar still renders at a visible minimum width.
+  const total = Math.max(1, end - base);
+  for (const span of spans) {
+    let depth = 0;
+    let current: TraceSpan | undefined = span;
+    const seen = new Set<string>();
+    while (current?.parentSpanId && !seen.has(current.spanId)) {
+      seen.add(current.spanId);
+      current = byId.get(current.parentSpanId);
+      depth += 1;
+    }
+    const offset = Date.parse(span.startedAt) - base;
+    const duration = span.durationMs ?? Math.max(0, end - Date.parse(span.startedAt));
+    layout.set(span.spanId, {
+      depth,
+      offsetPercent: (offset / total) * 100,
+      widthPercent: Math.max(1.5, (duration / total) * 100),
+      hasChildren: parents.has(span.spanId),
+    });
+  }
+  return layout;
 }
 
 function TracePanel({
@@ -78,19 +181,57 @@ function TracePanel({
   onExport: () => void;
 }) {
   const [filter, setFilter] = useState<TraceFilter>("all");
-  const failing = spans.find(
-    (span) => span.status === "error" || span.status === "denied",
-  );
+  const [collapsedIds, setCollapsedIds] = useState<Set<string>>(new Set());
+  const selectedRowRef = useRef<HTMLButtonElement | null>(null);
+  const failing = pickFailingSpan(spans);
   const selected = spans.find((span) => span.spanId === selectedId) ?? failing;
+  const layout = layoutSpans(spans);
+
+  const toggleCollapsed = (spanId: string) => {
+    setCollapsedIds((current) => {
+      const next = new Set(current);
+      if (next.has(spanId)) {
+        next.delete(spanId);
+      } else {
+        next.add(spanId);
+      }
+      return next;
+    });
+  };
+
+  // Hidden when any ancestor is collapsed — walk the chain, not just the parent.
+  const byId = new Map(spans.map((span) => [span.spanId, span]));
+  const hiddenByCollapse = (span: TraceSpan): boolean => {
+    let current = span.parentSpanId ? byId.get(span.parentSpanId) : undefined;
+    const seen = new Set<string>();
+    while (current && !seen.has(current.spanId)) {
+      if (collapsedIds.has(current.spanId)) {
+        return true;
+      }
+      seen.add(current.spanId);
+      current = current.parentSpanId ? byId.get(current.parentSpanId) : undefined;
+    }
+    return false;
+  };
+
   const visible = spans.filter((span) => {
     if (filter === "problems") {
       return span.status === "error" || span.status === "denied";
+    }
+    if (hiddenByCollapse(span)) {
+      return false;
     }
     if (filter === "all") {
       return true;
     }
     return span.kind === filter;
   });
+
+  // "Open failing step" is the 30-second root-cause affordance: selecting the
+  // span is not enough if it is below the fold.
+  useEffect(() => {
+    selectedRowRef.current?.scrollIntoView({ block: "nearest" });
+  }, [selected?.spanId]);
   const usageLabel = formatUsage(usage, estimatedCostUsd);
   const delta =
     usage && previousUsage
@@ -148,7 +289,9 @@ function TracePanel({
         </div>
       </div>
       <div className="trace-filters" role="tablist" aria-label="Span filter">
-        {(["all", "problems", "model", "tool", "policy"] as TraceFilter[]).map(
+        {(
+          ["all", "problems", "llm", "tool", "policy", "sandbox"] as TraceFilter[]
+        ).map(
           (item) => (
             <button
               key={item}
@@ -162,26 +305,65 @@ function TracePanel({
         )}
       </div>
       <ol className="trace-list">
-        {visible.map((span) => (
-          <li key={span.spanId}>
-            <button
-              type="button"
-              className={
-                "trace-row trace-" +
-                span.status +
-                (selected?.spanId === span.spanId ? " selected" : "")
-              }
-              onClick={() => onSelect(span.spanId)}
-            >
-              <span className="trace-kind">{span.kind}</span>
-              <span className="trace-name">{span.name}</span>
-              <span className="trace-status">{span.status}</span>
-              <span className="trace-duration">
-                {span.durationMs != null ? span.durationMs + "ms" : "…"}
-              </span>
-            </button>
-          </li>
-        ))}
+        {visible.map((span) => {
+          const geometry = layout.get(span.spanId);
+          const collapsed = collapsedIds.has(span.spanId);
+          return (
+            <li key={span.spanId}>
+              <button
+                type="button"
+                ref={
+                  selected?.spanId === span.spanId ? selectedRowRef : undefined
+                }
+                className={
+                  "trace-row trace-" +
+                  span.status +
+                  (selected?.spanId === span.spanId ? " selected" : "")
+                }
+                onClick={() => onSelect(span.spanId)}
+              >
+                <span
+                  className="trace-label"
+                  style={{ paddingLeft: (geometry?.depth ?? 0) * 12 }}
+                >
+                  {geometry?.hasChildren ? (
+                    <span
+                      className="trace-twisty"
+                      role="button"
+                      tabIndex={-1}
+                      aria-label={collapsed ? "Expand" : "Collapse"}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        toggleCollapsed(span.spanId);
+                      }}
+                    >
+                      {collapsed ? "▸" : "▾"}
+                    </span>
+                  ) : (
+                    <span className="trace-twisty trace-twisty-empty" />
+                  )}
+                  <span className={"trace-kind trace-kind-" + span.kind}>
+                    {span.kind}
+                  </span>
+                  <span className="trace-name">{span.name}</span>
+                  <span className="trace-status">{span.status}</span>
+                </span>
+                <span className="trace-track">
+                  <span
+                    className={"trace-bar trace-bar-" + span.kind}
+                    style={{
+                      marginLeft: (geometry?.offsetPercent ?? 0) + "%",
+                      width: (geometry?.widthPercent ?? 100) + "%",
+                    }}
+                  />
+                </span>
+                <span className="trace-duration">
+                  {span.durationMs != null ? span.durationMs + "ms" : "…"}
+                </span>
+              </button>
+            </li>
+          );
+        })}
       </ol>
       {selected ? (
         <pre className="trace-attributes">

@@ -27,12 +27,60 @@ export function runDurationMs(run: AgentRun): number | null {
   return Math.max(0, Date.parse(run.completedAt) - Date.parse(run.startedAt));
 }
 
+/** Attributes that let a reviewer say *why* the Run failed. */
+const DIAGNOSTIC_KEYS = [
+  "errorText",
+  "exitCode",
+  "reason",
+  "ruleId",
+  "error",
+  "failedStep",
+] as const;
+
+function hasDiagnostics(span: TraceSpan): boolean {
+  return DIAGNOSTIC_KEYS.some((key) => {
+    const value = span.attributes[key];
+    return value !== undefined && value !== null;
+  });
+}
+
+function spanDepth(span: TraceSpan, byId: Map<string, TraceSpan>): number {
+  let depth = 0;
+  let current: TraceSpan | undefined = span;
+  const seen = new Set<string>();
+  while (current?.parentSpanId && !seen.has(current.spanId)) {
+    seen.add(current.spanId);
+    current = byId.get(current.parentSpanId);
+    depth += 1;
+  }
+  return depth;
+}
+
+/**
+ * A failure marks every span on the path to it — `run.execute` and
+ * `runtime.spawn` are flagged too, but they are wrappers with no diagnostic
+ * attributes. Pick the innermost problem span that actually explains the
+ * failure, so "Open failing step" lands on the denied policy rule or the
+ * command that exited non-zero rather than on an empty envelope.
+ */
+export function pickFailingSpan(spans: TraceSpan[]): TraceSpan | null {
+  const problems = spans.filter(
+    (item) => item.status === "error" || item.status === "denied",
+  );
+  if (problems.length === 0) {
+    return null;
+  }
+  const byId = new Map(spans.map((item) => [item.spanId, item]));
+  const ranked = [...problems].sort(
+    (left, right) => spanDepth(right, byId) - spanDepth(left, byId),
+  );
+  return ranked.find(hasDiagnostics) ?? ranked[0] ?? null;
+}
+
 export function failingSpanIdentity(
   spans: TraceSpan[] | undefined,
 ): FailingSpanIdentity | null {
-  const span = (spans ?? []).find(
-    (item) => item.status === "error" || item.status === "denied",
-  );
+  const span = pickFailingSpan(spans ?? []);
   if (!span) {
     return null;
   }

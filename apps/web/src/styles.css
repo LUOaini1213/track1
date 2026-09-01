@@ -897,7 +897,7 @@ textarea:focus {
 .trace-row {
   width: 100%;
   display: grid;
-  grid-template-columns: 92px minmax(0, 1fr) 72px 56px;
+  grid-template-columns: minmax(160px, 40%) minmax(0, 1fr) 56px;
   gap: 8px;
   align-items: center;
   border: 1px solid transparent;
@@ -909,17 +909,84 @@ textarea:focus {
   font-size: 10px;
 }
 
+.trace-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.trace-twisty {
+  flex: none;
+  width: 10px;
+  color: #9a9a92;
+  font-size: 9px;
+  line-height: 1;
+}
+
+.trace-twisty-empty {
+  visibility: hidden;
+}
+
+/* Waterfall: the track is the full trace duration, the bar is this span. */
+.trace-track {
+  display: block;
+  min-width: 0;
+  height: 10px;
+  border-radius: 5px;
+  background: #f0eee8;
+  overflow: hidden;
+}
+
+.trace-bar {
+  display: block;
+  height: 100%;
+  border-radius: 5px;
+  background: #9a9a92;
+}
+
+.trace-bar-agent {
+  background: #6b5bd2;
+}
+
+.trace-bar-llm {
+  background: #2f8f74;
+}
+
+.trace-bar-tool {
+  background: #c07a2a;
+}
+
+.trace-bar-policy {
+  background: #3f7cc0;
+}
+
+.trace-bar-sandbox {
+  background: #8a6ea8;
+}
+
+.trace-bar-runtime {
+  background: #9a9a92;
+}
+
+.trace-error .trace-bar,
+.trace-denied .trace-bar {
+  background: var(--red);
+}
+
 .trace-row.selected {
   border-color: #b7aaee;
   background: #f4f1ff;
 }
 
 .trace-kind {
+  flex: none;
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: #7b7c74;
   font-weight: 700;
   font-size: 8px;
+  min-width: 46px;
 }
 
 .trace-name {

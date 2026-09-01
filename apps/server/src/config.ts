@@ -13,6 +13,14 @@ const envSchema = z.object({
   CODEX_SANDBOX_MODE: z
     .enum(["read-only", "workspace-write", "danger-full-access"])
     .default("workspace-write"),
+  // OpenTelemetry keeps GenAI content attributes Opt-In because of the PII
+  // risk. This is the equivalent switch. It defaults ON because the failing
+  // command and its exit code ARE the deliverable of an audit trace; turn it
+  // off to keep prompts, commands and error text out of stored spans.
+  TRACE_CAPTURE_CONTENT: z
+    .enum(["true", "false"])
+    .default("true")
+    .transform((value) => value === "true"),
   CODEX_TIMEOUT_MS: z.coerce.number().int().min(1_000).default(600_000),
   CODEX_MAX_OUTPUT_BYTES: z.coerce.number().int().min(65_536).default(2_097_152),
   RUNTIME_PROVIDER: z.enum(["local-process", "container"]).default("local-process"),
@@ -73,6 +81,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
     codexHome: path.resolve(env.CODEX_HOME),
     codexBin: env.CODEX_BIN,
     codexSandboxMode: env.CODEX_SANDBOX_MODE,
+    traceCaptureContent: env.TRACE_CAPTURE_CONTENT,
     codexTimeoutMs: env.CODEX_TIMEOUT_MS,
     codexMaxOutputBytes: env.CODEX_MAX_OUTPUT_BYTES,
     runtimeProvider: env.RUNTIME_PROVIDER,

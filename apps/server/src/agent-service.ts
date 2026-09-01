@@ -17,11 +17,37 @@ import type {
   AgentRunner,
   CreateAgentInput,
   Message,
+  RunUsage,
+  TraceSpan,
   UpdateAgentInput,
 } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
 
 const now = () => new Date().toISOString();
+
+/**
+ * A failed or denied Run never reaches the runner's usage result, but the model
+ * spans already collected still carry the tokens the Run spent. The Track A gate
+ * asks for the failing step *and* available usage on the same trace, so recover
+ * it from the spans instead of persisting `usage: null`.
+ */
+function usageFromSpans(spans: TraceSpan[]): RunUsage | null {
+  let inputTokens = 0;
+  let outputTokens = 0;
+  for (const span of spans) {
+    if (span.kind !== "llm") {
+      continue;
+    }
+    const input = span.attributes["gen_ai.usage.input_tokens"];
+    const output = span.attributes["gen_ai.usage.output_tokens"];
+    if (typeof input === "number") inputTokens += input;
+    if (typeof output === "number") outputTokens += output;
+  }
+  if (inputTokens <= 0 && outputTokens <= 0) {
+    return null;
+  }
+  return { inputTokens, outputTokens };
+}
 
 export class AgentService {
   private readonly activeExecutions = new Map<string, Promise<void>>();
@@ -312,14 +338,23 @@ export class AgentService {
   }
 
   private async executeRun(agentAtStart: Agent, run: AgentRun): Promise<void> {
-    const collector = new TraceCollector(run.id, agentAtStart.id, (spans) => {
-      void this.store.mutate((database) => {
-        const storedRun = database.runs.find((item) => item.id === run.id);
-        if (storedRun) {
-          storedRun.traceId = collector.traceId;
-          storedRun.spans = spans;
-        }
-      });
+    const collector = new TraceCollector(run.id, agentAtStart.id, {
+      modelName: this.config.arkModel || null,
+      captureContent: this.config.traceCaptureContent,
+      onChange: (spans) => {
+        void this.store
+          .mutate((database) => {
+            const storedRun = database.runs.find((item) => item.id === run.id);
+            if (storedRun) {
+              storedRun.traceId = collector.traceId;
+              storedRun.spans = spans;
+            }
+          })
+          // Debounced best-effort persistence: a failed interim write must not
+          // become an unhandled rejection and take the process down mid-run.
+          // The final trace is written again by persistTrace.
+          .catch(() => undefined);
+      },
     });
     await this.store.mutate((database) => {
       const storedRun = database.runs.find((item) => item.id === run.id);
@@ -330,10 +365,15 @@ export class AgentService {
       }
     });
     const rootSpanId = collector.startSpan(
-      "run.execute",
-      "orchestration",
+      "invoke_agent " + agentAtStart.name,
+      "agent",
       null,
-      { promptChars: run.prompt.length },
+      {
+        "gen_ai.operation.name": "invoke_agent",
+        "gen_ai.agent.id": agentAtStart.id,
+        "gen_ai.agent.name": agentAtStart.name,
+        promptChars: run.prompt.length,
+      },
     );
     const policySpanId = collector.startSpan(
       "policy.check",
@@ -440,6 +480,8 @@ export class AgentService {
         });
       }
       await this.persistTrace(run.id, collector);
+      const spans = collector.snapshot();
+      const partialUsage = usageFromSpans(spans);
       await this.store.mutate((database) => {
         const storedRun = database.runs.find((item) => item.id === run.id);
         const agent = database.agents.find((item) => item.id === agentAtStart.id);
@@ -448,7 +490,8 @@ export class AgentService {
           storedRun.error = redactText(message);
           storedRun.completedAt = completedAt;
           storedRun.traceId = collector.traceId;
-          storedRun.spans = collector.snapshot();
+          storedRun.spans = spans;
+          storedRun.usage = partialUsage;
         }
         if (agent) {
           if (agent.status !== "stopped") {

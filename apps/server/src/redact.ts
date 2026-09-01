@@ -5,7 +5,7 @@ const configuredSecrets = new Set<string>();
 const PATTERNS: RegExp[] = [
   /\bBearer\s+\S+/gi,
   /\b(sk|ep)-[A-Za-z0-9_-]{8,}\b/g,
-  /\b(ARK_API_KEY|OPENAI_API_KEY|API_KEY|AUTHORIZATION)\s*[=:]\s*\S+/gi,
+  /\b\w*(ARK_API_KEY|OPENAI_API_KEY|API_KEY|AUTHORIZATION)\s*[=:]\s*\S+/gi,
   /\bdemo-not-a-real-key\b/gi,
   /\bFAKE_ARK_API_KEY\s*[=:]\s*\S+/gi,
 ];

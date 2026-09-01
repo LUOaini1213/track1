@@ -23,10 +23,17 @@ export interface Message {
   createdAt: string;
 }
 
+/**
+ * Aligned with the OpenTelemetry GenAI semantic conventions (Development
+ * stage): `agent` and `llm` carry the `invoke_agent` and `chat` operations.
+ * `policy`, `runtime` and `sandbox` have no well-known equivalent and remain
+ * custom values, which the spec permits.
+ * See docs/TRACE_PLANE.md for the full mapping table.
+ */
 export type SpanKind =
-  | "orchestration"
+  | "agent"
   | "runtime"
-  | "model"
+  | "llm"
   | "tool"
   | "sandbox"
   | "policy";

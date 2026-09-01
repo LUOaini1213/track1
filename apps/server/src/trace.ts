@@ -4,18 +4,68 @@ import type { SpanKind, SpanStatus, TraceSpan } from "./types.js";
 
 const now = () => new Date().toISOString();
 
+/**
+ * Attributes that can echo user or workspace content. OpenTelemetry keeps the
+ * equivalent GenAI content attributes Opt-In because of the PII risk, so the
+ * same switch exists here (`TRACE_CAPTURE_CONTENT`). It defaults ON: an audit
+ * tool whose deliverable is "which command failed, and with what exit code"
+ * would gut its own root-cause story with content off.
+ */
+const CONTENT_ATTRIBUTE_KEYS = [
+  "command",
+  "errorText",
+  "failedStep",
+  "message",
+  "workspace",
+];
+
+const CONTENT_WITHHELD = "[content capture disabled]";
+
+export interface TraceCollectorOptions {
+  onChange?: (spans: TraceSpan[]) => void | Promise<void>;
+  persistDebounceMs?: number;
+  /** `gen_ai.request.model`, used to build low-cardinality `chat {model}` names. */
+  modelName?: string | null;
+  /** Mirrors the OTel Opt-In rule for content attributes. Defaults to true. */
+  captureContent?: boolean;
+}
+
 export class TraceCollector {
   readonly traceId: string;
   readonly spans: TraceSpan[] = [];
   private readonly itemSpans = new Map<string, string>();
+  private readonly onChange:
+    | ((spans: TraceSpan[]) => void | Promise<void>)
+    | undefined;
+  private readonly persistDebounceMs: number;
+  private readonly modelName: string | null;
+  private readonly captureContent: boolean;
 
   constructor(
     private readonly runId: string,
     private readonly agentId: string,
-    private readonly onChange?: (spans: TraceSpan[]) => void | Promise<void>,
-    private readonly persistDebounceMs = 40,
+    options: TraceCollectorOptions = {},
   ) {
     this.traceId = randomUUID();
+    this.onChange = options.onChange;
+    this.persistDebounceMs = options.persistDebounceMs ?? 40;
+    this.modelName = options.modelName ?? null;
+    this.captureContent = options.captureContent ?? true;
+  }
+
+  private applyContentPolicy(
+    attributes: TraceSpan["attributes"],
+  ): TraceSpan["attributes"] {
+    if (this.captureContent) {
+      return attributes;
+    }
+    const next = { ...attributes };
+    for (const key of CONTENT_ATTRIBUTE_KEYS) {
+      if (next[key] !== undefined && next[key] !== null) {
+        next[key] = CONTENT_WITHHELD;
+      }
+    }
+    return next;
   }
 
   private persistTimer: ReturnType<typeof setTimeout> | null = null;
@@ -69,7 +119,7 @@ export class TraceCollector {
       startedAt: now(),
       endedAt: null,
       durationMs: null,
-      attributes: redactDeep(attributes),
+      attributes: redactDeep(this.applyContentPolicy(attributes)),
     });
     this.schedulePersist();
     return spanId;
@@ -91,7 +141,9 @@ export class TraceCollector {
       0,
       Date.parse(endedAt) - Date.parse(span.startedAt),
     );
-    span.attributes = redactDeep({ ...span.attributes, ...attributes });
+    span.attributes = redactDeep(
+      this.applyContentPolicy({ ...span.attributes, ...attributes }),
+    );
     this.schedulePersist();
   }
 
@@ -115,8 +167,11 @@ export class TraceCollector {
       const itemId = typeof item.id === "string" ? item.id : randomUUID();
       const itemType = typeof item.type === "string" ? item.type : "item";
       const kind = kindForItem(itemType);
-      const name = kind + "." + itemType;
-      const attributes = this.withRetryLink(itemAttributes(item), item);
+      const name = spanNameForItem(itemType);
+      const attributes = this.withRetryLink(
+        { ...itemAttributes(item), ...otelItemAttributes(itemType) },
+        item,
+      );
       const status = itemStatus(item);
       if (type === "item.started") {
         const spanId = this.startSpan(name, kind, parentSpanId, attributes);
@@ -139,12 +194,24 @@ export class TraceCollector {
         event.usage && typeof event.usage === "object"
           ? (event.usage as Record<string, unknown>)
           : {};
-      const spanId = this.startSpan("model.turn", "model", parentSpanId, {
-        inputTokens:
-          typeof usage.input_tokens === "number" ? usage.input_tokens : null,
-        outputTokens:
-          typeof usage.output_tokens === "number" ? usage.output_tokens : null,
-      });
+      const spanId = this.startSpan(
+        this.modelName ? "chat " + this.modelName : "chat",
+        "llm",
+        parentSpanId,
+        {
+          "gen_ai.operation.name": "chat",
+          "gen_ai.request.model": this.modelName,
+          "gen_ai.usage.input_tokens":
+            typeof usage.input_tokens === "number" ? usage.input_tokens : null,
+          "gen_ai.usage.output_tokens":
+            typeof usage.output_tokens === "number" ? usage.output_tokens : null,
+          // Provenance, not a conformance claim: these are the counts Codex
+          // reports on turn.completed. OTel expects gen_ai.usage.input_tokens
+          // to be the billed, cache-inclusive count; we do not know that the
+          // Codex number is either, so the USD figure stays labelled "est.".
+          "gen_ai.usage.source": "codex turn.completed",
+        },
+      );
       this.endSpan(spanId, "ok");
       return;
     }
@@ -205,9 +272,50 @@ function kindForItem(itemType: string): SpanKind {
     return "sandbox";
   }
   if (itemType === "agent_message" || itemType === "reasoning") {
-    return "model";
+    return "llm";
   }
   return "runtime";
+}
+
+/** The OTel tool name a Codex item maps onto, or null when it is not a tool. */
+function toolNameForItem(itemType: string): string | null {
+  if (itemType === "command_execution" || itemType === "command") {
+    return "shell";
+  }
+  if (itemType === "file_change" || itemType === "files") {
+    return "apply_patch";
+  }
+  return null;
+}
+
+/**
+ * OTel forms span names as `{operation} {name}` and asks them to stay
+ * low-cardinality, so the tool name is used rather than the command itself.
+ */
+function spanNameForItem(itemType: string): string {
+  const toolName = toolNameForItem(itemType);
+  if (toolName) {
+    return "execute_tool " + toolName;
+  }
+  if (itemType === "agent_message" || itemType === "reasoning") {
+    return "chat " + itemType;
+  }
+  return "runtime." + itemType;
+}
+
+function otelItemAttributes(itemType: string): TraceSpan["attributes"] {
+  const toolName = toolNameForItem(itemType);
+  if (toolName) {
+    return {
+      "gen_ai.operation.name": "execute_tool",
+      "gen_ai.tool.name": toolName,
+      "gen_ai.tool.type": "extension",
+    };
+  }
+  if (itemType === "agent_message" || itemType === "reasoning") {
+    return { "gen_ai.operation.name": "chat" };
+  }
+  return {};
 }
 
 function retrySourceId(item: Record<string, unknown>): string | null {

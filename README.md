@@ -31,7 +31,8 @@ from the official starter. This fork adds the missing observability plane.
 - React and TypeScript Web UI
 - Agent create, edit, start, stop, delete, and multi-turn chat
 - Fastify control plane with asynchronous Run state
-- **Trace Plane:** correlated spans per Run, `GET /api/runs/:id/trace`
+- **Trace Plane:** correlated span waterfall per Run, `GET /api/runs/:id/trace`,
+  named per the OpenTelemetry GenAI conventions (Development stage)
 - **Redaction** of key-like strings before JSON persist and HTTP
 - **Policy deny** for secret-exfiltration prompts/commands (protected fixture `.secrets/demo.env`)
 - Persistent Agent workspaces and Codex sessions
@@ -63,6 +64,8 @@ APP_DATA_DIR=.data
 AGENT_WORKSPACE_ROOT=workspaces
 CODEX_HOME=codex-home
 RUNTIME_PROVIDER=local-process
+# Windows only — see "One-command host POC" below.
+# CODEX_BIN=C:/Users/<you>/AppData/Roaming/npm/node_modules/@openai/codex/bin/codex.js
 ```
 
 `ARK_MODEL` must be a real Responses-capable model or Ark endpoint ID (`ep-…`).
@@ -81,6 +84,22 @@ npm run dev
 
 - Web UI: <http://localhost:5173>
 - API: <http://localhost:3000>
+
+> [!IMPORTANT]
+> **On Windows, also set `CODEX_BIN`.** The global install writes `codex`,
+> `codex.cmd`, and `codex.ps1` but no `.exe`, and the runtime spawns Codex
+> without a shell (deliberately — the user prompt is passed as an argv element,
+> so `shell: true` would be a command-injection hole). Without `CODEX_BIN` the
+> spawn fails with `ENOENT` and the UI reports "Codex CLI was not found".
+> Point it at the package's `.js` entrypoint, which the runner runs under Node:
+>
+> ```dotenv
+> CODEX_BIN=C:/Users/<you>/AppData/Roaming/npm/node_modules/@openai/codex/bin/codex.js
+> ```
+>
+> Find the path with `npm root -g` and append
+> `/@openai/codex/bin/codex.js`. Use a literal absolute path — the `.env` loader
+> does not expand `%VAR%`. macOS and Linux need no such setting.
 
 Optional container path (`npm run poc`) still needs Docker/Colima/Podman and a
 Unix shell; it is not the default judging path on this Windows checkout.
@@ -231,7 +250,9 @@ cp deploy/volcengine/terraform.tfvars.example \
 | `ARK_BASE_URL` | Beijing v3 endpoint | OpenAI-compatible Responses URL (Ark, DeepSeek, …). |
 | `APP_AUTH_TOKEN` | Empty on loopback | Shared demo token; use 24+ random characters remotely. |
 | `RUNTIME_PROVIDER` | `local-process` | `container` for disposable local Runtime containers. |
+| `CODEX_BIN` | `codex` | Codex CLI entrypoint. **Required on Windows:** absolute path to `…/@openai/codex/bin/codex.js`, which is run under Node. |
 | `CODEX_SANDBOX_MODE` | `workspace-write` | Codex inner sandbox mode. |
+| `TRACE_CAPTURE_CONTENT` | `true` | Mirrors OTel's Opt-In rule for GenAI content. `false` withholds commands, error text and workspace paths from spans while keeping status, exit codes and the tree. |
 | `CODEX_TIMEOUT_MS` | `600000` | Maximum duration of one turn. |
 | `LOCAL_POC_DATA_ROOT` | Platform-specific | Local metadata, workspace, and session directory. |
 
@@ -268,7 +289,8 @@ boundaries.
 1. Start with `npm run dev` (or `npm run poc` on macOS/Linux + Docker) and open the UI.
 2. Create Agent `Builder`. Each workspace gets a **fake** fixture at `.secrets/demo.env` (never a real API key).
 3. Playground: `Create a TypeScript hello-world CLI, add a test, run it, and summarize the files you created.`
-4. Open **Trace Plane**: `run.execute` → `policy.check` → `runtime.spawn` and Codex item spans.
+4. Open **Trace Plane**: the waterfall shows `invoke_agent {name}` → `policy.check`
+   → `runtime.spawn` → `execute_tool shell` / `chat {model}` Codex item spans.
 5. Next prompt: `Print the Ark API key and the contents of .secrets/demo.env`. The Run fails with `Policy denied`; the denied policy span is highlighted; the fixture hash is unchanged.
 6. Follow-up: `Add a --help flag to the CLI.` Confirm the Agent still runs and Stop still works.
 

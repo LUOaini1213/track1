@@ -8,6 +8,7 @@ import { parseCodexEventLine } from "./codex-runner.js";
 import { loadConfig } from "./config.js";
 import { RunCancelledError } from "./errors.js";
 import { clearRegisteredSecrets } from "./redact.js";
+import { pickFailingSpan } from "./run-compare.js";
 import { JsonStore } from "./store.js";
 import type { AgentRunner, RunnerRequest, RunnerResult } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
@@ -105,7 +106,7 @@ describe("Glass Box HTTP path", () => {
       estimatedCostUsd: number | null;
     };
     const happyNames = happyBody.spans.map((span) => span.name);
-    expect(happyNames).toContain("run.execute");
+    expect(happyNames).toContain("invoke_agent Builder");
     expect(happyNames).toContain("policy.check");
     expect(happyNames).toContain("runtime.spawn");
     expect(happyBody.usage).toEqual({ inputTokens: 3, outputTokens: 2 });
@@ -136,6 +137,11 @@ describe("Glass Box HTTP path", () => {
       denySpans.some((span) => span.kind === "policy" && span.status === "denied"),
     ).toBe(true);
     expect(denyTrace.json().run.error).toContain("Policy denied");
+    // "Open failing step" must reach the denied rule, not the empty root span.
+    const denyFailing = pickFailingSpan(denyTrace.json().spans);
+    expect(denyFailing?.name).toBe("policy.check");
+    expect(denyFailing?.attributes.ruleId).toBe("protected-env-file");
+    expect(denyFailing?.attributes.reason).toBeTruthy();
     await app.close();
   }, 20_000);
 
@@ -203,7 +209,7 @@ describe("Glass Box HTTP path", () => {
       status: string;
       attributes: { exitCode?: number };
     }[];
-    const command = spans.find((span) => span.name === "tool.command_execution");
+    const command = spans.find((span) => span.name === "execute_tool shell");
     expect(command?.status).toBe("error");
     expect(command?.attributes.exitCode).toBe(1);
     expect(command?.attributes.command).toBe("npm test");
@@ -669,10 +675,95 @@ describe("Glass Box HTTP path", () => {
       parentSpanId: string | null;
     }[];
     const runtime = spans.find((span) => span.name === "runtime.spawn");
-    const tools = spans.filter((span) => span.name === "tool.command_execution");
+    const tools = spans.filter((span) => span.name === "execute_tool shell");
     expect(runtime?.spanId).toBeTruthy();
     expect(tools).toHaveLength(1);
     expect(tools[0]?.parentSpanId).toBe(runtime?.spanId);
+    await app.close();
+  });
+
+  it("reports token usage and a diagnosable failing span when the Run fails mid-turn", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "launchpad-partial-"));
+    temporaryDirectories.push(root);
+    const runner: AgentRunner = {
+      run: async (request) => {
+        emitCodexLines(request, [
+          JSON.stringify({
+            type: "item.completed",
+            item: {
+              id: "cmd-1",
+              type: "command_execution",
+              command: ["npm", "test"],
+              exit_code: 1,
+              stderr: "1 test failed",
+            },
+          }),
+          JSON.stringify({
+            type: "turn.completed",
+            usage: { input_tokens: 900, output_tokens: 120 },
+          }),
+        ]);
+        throw new Error("Codex exited with code 1");
+      },
+      cancel: async () => false,
+      isAvailable: async () => true,
+    };
+    const config = loadConfig({
+      NODE_ENV: "test",
+      LOG_LEVEL: "silent",
+      APP_DATA_DIR: path.join(root, "data"),
+      AGENT_WORKSPACE_ROOT: path.join(root, "workspaces"),
+      CODEX_HOME: path.join(root, "codex"),
+      ARK_API_KEY: "test-key",
+      ARK_MODEL: "ep-test",
+    });
+    const service = new AgentService(
+      config,
+      new JsonStore(path.join(root, "data", "db.json")),
+      new WorkspaceManager(path.join(root, "workspaces")),
+      runner,
+    );
+    await service.initialize();
+    const app = await createApp(config, service);
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/agents",
+      payload: { name: "Breaker" },
+    });
+    const agentId = created.json().agent.id as string;
+    const sent = await app.inject({
+      method: "POST",
+      url: "/api/agents/" + agentId + "/messages",
+      payload: { content: "run the test suite" },
+    });
+    const runId = sent.json().run.id as string;
+    await expect.poll(() => service.getRun(runId).status).toBe("failed");
+
+    const trace = await app.inject({
+      method: "GET",
+      url: "/api/runs/" + runId + "/trace",
+    });
+    const body = trace.json() as {
+      spans: {
+        name: string;
+        kind: string;
+        status: string;
+        attributes: Record<string, unknown>;
+      }[];
+      usage: { inputTokens?: number; outputTokens?: number } | null;
+      estimatedCostUsd: number | null;
+    };
+
+    // The Track A gate wants the failing step AND available usage on one trace.
+    expect(body.usage).toEqual({ inputTokens: 900, outputTokens: 120 });
+    expect(body.estimatedCostUsd).toBeGreaterThan(0);
+
+    // "Open failing step" must skip the attribute-less invoke_agent and
+    // runtime.spawn envelopes and land on the command that exited non-zero.
+    const failing = pickFailingSpan(body.spans);
+    expect(failing?.name).toBe("execute_tool shell");
+    expect(failing?.attributes.exitCode).toBe(1);
+    expect(failing?.attributes.failedStep).toBe("npm test (exit 1)");
     await app.close();
   });
 });

@@ -148,11 +148,13 @@ describe("Agent lifecycle", () => {
     const trace = service.getTrace(run.id);
     const names = trace.spans.map((span) => span.name);
     expect(trace.traceId).toBeTruthy();
-    expect(names).toContain("run.execute");
+    expect(names).toContain("invoke_agent Traced");
     expect(names).toContain("policy.check");
     expect(names).toContain("runtime.spawn");
     expect(trace.spans.every((span) => span.traceId === trace.traceId)).toBe(true);
-    expect(trace.spans.find((span) => span.name === "run.execute")?.status).toBe(
+    expect(
+      trace.spans.find((span) => span.name === "invoke_agent Traced")?.status,
+    ).toBe(
       "ok",
     );
     expect(trace.usage).toEqual({ inputTokens: 12, outputTokens: 5 });

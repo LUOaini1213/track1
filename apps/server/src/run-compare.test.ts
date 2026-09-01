@@ -8,7 +8,7 @@ const span = (overrides: Partial<TraceSpan>): TraceSpan => ({
   parentSpanId: null,
   runId: "r1",
   agentId: "a",
-  name: "tool.command_execution",
+  name: "execute_tool shell",
   kind: "tool",
   status: "error",
   startedAt: "2026-01-01T00:00:00.000Z",
@@ -43,6 +43,40 @@ describe("run compare", () => {
       exitCode: 1,
       errorText: "boom",
     });
+  });
+
+  it("skips the attribute-less root span so the failing step is diagnosable", () => {
+    const root = span({
+      spanId: "s-root",
+      name: "invoke_agent Builder",
+      kind: "agent",
+      status: "denied",
+      attributes: { promptChars: 62 },
+    });
+    const policy = span({
+      spanId: "s-policy",
+      name: "policy.check",
+      kind: "policy",
+      status: "denied",
+      attributes: {
+        ruleId: "print-ark-secret",
+        reason: "Attempt to print or dump Ark / API credentials",
+      },
+    });
+    const identity = failingSpanIdentity([root, policy]);
+    expect(identity?.spanId).toBe("s-policy");
+    expect(identity?.name).toBe("policy.check");
+  });
+
+  it("falls back to the root span when it is the only problem span", () => {
+    const root = span({
+      spanId: "s-root",
+      name: "invoke_agent Builder",
+      kind: "agent",
+      status: "error",
+      attributes: { error: "spawn codex ENOENT" },
+    });
+    expect(failingSpanIdentity([root])?.spanId).toBe("s-root");
   });
 
   it("compares usage and duration of two Runs", () => {

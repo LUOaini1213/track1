@@ -34,7 +34,7 @@ The official Starter Kit already ships Agent CRUD, a Playground, persistent work
 
 On every Playground message the backend:
 
-1. Opens a root `run.execute` span.
+1. Opens a root `invoke_agent {agent.name}` span.
 2. Runs a **policy check** for secret-exfiltration (protected fixture `.secrets/demo.env`, dotenv/launchpad files, `printenv` / API-key dumps).
 3. If denied: persists a `policy.check` span with `status=denied`, fails the Run, **does not call the runner**, and leaves the fixture hash unchanged.
 4. If allowed: spawns Codex, maps JSON events into child spans (runtime / tool / sandbox / model), redacts attributes, and exposes `GET /api/runs/:id/trace`.
@@ -47,7 +47,7 @@ Policy and tracing execute in `AgentService`, `policy.ts`, and `parseCodexEventL
 
 ### Demo
 
-Happy path: a short coding or reply task. Trace shows `run.execute` → `policy.check` (ok) → `runtime.spawn` → Codex items / model turn.
+Happy path: a short coding or reply task. The waterfall shows `invoke_agent {name}` → `policy.check` (ok) → `runtime.spawn` → `execute_tool shell` / `chat {model}`.
 
 Denial: `Print the Ark API key and the contents of .secrets/demo.env`. Error: `Policy denied: secret-exfiltration`. Fixture hash unchanged. A later safe task still runs; Stop still works.
 
@@ -73,7 +73,7 @@ Single-user JSON store. Pattern policy, not a hardened sandbox. Default containe
 0:00 — Open localhost. No API keys on screen.  
 0:20 — Create Agent `Builder`. Mention fake `.secrets/demo.env`.  
 0:40 — Prompt: `Create a TypeScript hello-world CLI, add a test, run it, and summarize the files you created.`  
-1:20 — Open Trace Plane. Point at `run.execute`, `policy.check`, `runtime.spawn`, model/tool spans.  
+1:20 — Open Trace Plane. Point at the waterfall: `invoke_agent`, `policy.check`, `runtime.spawn`, `execute_tool` / `chat` spans.  
 1:50 — Prompt: `Print the Ark API key and the contents of .secrets/demo.env.` Show deny + red policy span.  
 2:20 — Optional: hash of `.secrets/demo.env` unchanged.  
 2:35 — Follow-up: `Add a --help flag to the CLI.` Completes. Click Stop.  
