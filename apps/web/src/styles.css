@@ -886,6 +886,79 @@ textarea:focus {
   color: #513db9;
 }
 
+/* Time axis. Shares the row grid so ticks line up with the bars. */
+.trace-axis {
+  display: grid;
+  grid-template-columns: minmax(160px, 40%) minmax(0, 1fr) 56px;
+  gap: 8px;
+  align-items: center;
+  padding: 0 8px 4px;
+  font-size: 9px;
+  color: #9a9a92;
+  font-variant-numeric: tabular-nums;
+}
+
+.trace-axis-track {
+  position: relative;
+  height: 12px;
+  border-bottom: 1px solid #e1dfd8;
+}
+
+.trace-axis-tick {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
+
+.trace-axis-tick::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: -4px;
+  width: 1px;
+  height: 4px;
+  background: #d6d3ca;
+}
+
+.trace-axis-total {
+  text-align: right;
+  font-weight: 700;
+}
+
+.trace-nav {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: 6px;
+}
+
+.trace-nav-arrow {
+  border: 1px solid #e1dfd8;
+  background: white;
+  border-radius: 6px;
+  width: 20px;
+  height: 20px;
+  cursor: pointer;
+  color: #6f6f69;
+  font-size: 13px;
+  line-height: 1;
+  padding: 0;
+}
+
+.trace-nav-arrow:hover {
+  border-color: #b7aaee;
+  color: #4b3fa8;
+}
+
+.trace-nav-count {
+  font-size: 9px;
+  color: #6f6f69;
+  font-variant-numeric: tabular-nums;
+  min-width: 24px;
+  text-align: center;
+}
+
 .trace-list {
   list-style: none;
   margin: 0;

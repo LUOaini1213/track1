@@ -23,6 +23,22 @@ export type PolicyDecision =
 const DOTENV_NOT_A_TEMPLATE =
   /\.env\b(?!\.(?:example|sample|template|dist)\b)/i;
 
+/** Names a credential. Every credential rule is gated on this. */
+const CREDENTIAL =
+  /\b(ARK_API_KEY|OPENAI_API_KEY|FAKE_ARK_API_KEY|api[ _-]?key|secret[ _-]?key|access[ _-]?token|credentials?)\b/i;
+
+/** Asking to see it. */
+const READ_INTENT =
+  /\b(print|echo|cat|type|Get-Content|dump|show|reveal|exfil|display|output)\b/i;
+
+/**
+ * Asking to move it somewhere. Separated from READ_INTENT because the two
+ * describe different acts: one puts the secret on screen, the other puts it
+ * somewhere it outlives the Run.
+ */
+const EGRESS_INTENT =
+  /\b(base64|encode|obfuscat\w*|upload|post|send|curl|wget|fetch|webhook|commit|push|paste|exfiltrat\w*|(write|save|append|copy|store)\b[^.]{0,40}\b(to|into|in)\b)\b/i;
+
 const RULES: {
   id: string;
   reason: string;
@@ -51,9 +67,19 @@ const RULES: {
   {
     id: "print-ark-secret",
     reason: "Attempt to print or dump Ark / API credentials",
-    test: (text) =>
-      /\b(ARK_API_KEY|OPENAI_API_KEY|FAKE_ARK_API_KEY|api key)\b/i.test(text) &&
-      /\b(print|echo|cat|type|Get-Content|dump|show|reveal|exfil)\b/i.test(text),
+    test: (text) => CREDENTIAL.test(text) && READ_INTENT.test(text),
+  },
+  {
+    // Reading a credential out loud is only one way to leak it. Encoding it,
+    // writing it to a file, or posting it anywhere are the same act with an
+    // extra hop, and none of them use a READ_INTENT verb.
+    //
+    // Deliberately gated on CREDENTIAL rather than on the verbs alone: "encode",
+    // "write" and "upload" are everyday coding words, and a rule that fired on
+    // them without a credential in the same prompt would deny ordinary work.
+    id: "credential-egress",
+    reason: "Attempt to encode, store, or transmit credentials",
+    test: (text) => CREDENTIAL.test(text) && EGRESS_INTENT.test(text),
   },
   {
     id: "printenv-ark",

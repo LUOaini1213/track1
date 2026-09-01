@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { compareRuns, failingSpanIdentity } from "./run-compare.js";
+import {
+  compareRuns,
+  failingSpanIdentity,
+  problemSpans,
+  spanDepths,
+} from "./run-compare.js";
 import type { AgentRun, TraceSpan } from "./types.js";
 
 const span = (overrides: Partial<TraceSpan>): TraceSpan => ({
@@ -77,6 +82,33 @@ describe("run compare", () => {
       attributes: { error: "spawn codex ENOENT" },
     });
     expect(failingSpanIdentity([root])?.spanId).toBe("s-root");
+  });
+
+  it("ranks several failures by explanation, then depth, then first-seen", () => {
+    const root = span({ spanId: "root", parentSpanId: null, kind: "agent",
+      name: "invoke_agent Builder", status: "error", attributes: { promptChars: 12 } });
+    const spawn = span({ spanId: "spawn", parentSpanId: "root", kind: "runtime",
+      name: "runtime.spawn", status: "error", attributes: {} });
+    const first = span({ spanId: "first", parentSpanId: "spawn", kind: "tool",
+      status: "error", attributes: { command: "npm test", exitCode: 1 } });
+    const second = span({ spanId: "second", parentSpanId: "spawn", kind: "tool",
+      status: "error", attributes: { command: "npm run lint", exitCode: 2 } });
+
+    const ranked = problemSpans([root, spawn, first, second]);
+    // Both wrappers rank last: they are on the failure path but explain nothing.
+    expect(ranked.map((s) => s.spanId)).toEqual(["first", "second", "spawn", "root"]);
+    // When a Run fails twice the first failure is usually the cause; the later
+    // one is a cascade. That ordering is now explicit, not sort-stability luck.
+    expect(ranked[0]?.attributes.command).toBe("npm test");
+  });
+
+  it("gives an orphaned span a depth without looping forever", () => {
+    const orphan = span({ spanId: "orphan", parentSpanId: "missing" });
+    const a = span({ spanId: "a", parentSpanId: "b" });
+    const b = span({ spanId: "b", parentSpanId: "a" });
+    const depths = spanDepths([orphan, a, b]);
+    expect(depths.get("orphan")).toBe(1);
+    expect(depths.get("a")).toBeGreaterThanOrEqual(1);
   });
 
   it("compares usage and duration of two Runs", () => {

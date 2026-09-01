@@ -63,14 +63,15 @@ const DIAGNOSTIC_KEYS = [
   "failedStep",
 ];
 
-function pickFailingSpan(spans: TraceSpan[]): TraceSpan | undefined {
+function problemSpans(spans: TraceSpan[]): TraceSpan[] {
   const problems = spans.filter(
     (span) => span.status === "error" || span.status === "denied",
   );
   if (problems.length === 0) {
-    return undefined;
+    return [];
   }
   const byId = new Map(spans.map((span) => [span.spanId, span]));
+  const order = new Map(spans.map((span, index) => [span.spanId, index]));
   const depthOf = (span: TraceSpan): number => {
     let depth = 0;
     let current: TraceSpan | undefined = span;
@@ -82,17 +83,18 @@ function pickFailingSpan(spans: TraceSpan[]): TraceSpan | undefined {
     }
     return depth;
   };
-  const ranked = [...problems].sort(
-    (left, right) => depthOf(right) - depthOf(left),
-  );
-  return (
-    ranked.find((span) =>
-      DIAGNOSTIC_KEYS.some((key) => {
-        const value = span.attributes[key];
-        return value !== undefined && value !== null;
-      }),
-    ) ?? ranked[0]
-  );
+  const explains = (span: TraceSpan) =>
+    DIAGNOSTIC_KEYS.some((key) => {
+      const value = span.attributes[key];
+      return value !== undefined && value !== null;
+    });
+  return [...problems].sort((left, right) => {
+    const byExplains = Number(explains(right)) - Number(explains(left));
+    if (byExplains !== 0) return byExplains;
+    const byDepth = depthOf(right) - depthOf(left);
+    if (byDepth !== 0) return byDepth;
+    return (order.get(left.spanId) ?? 0) - (order.get(right.spanId) ?? 0);
+  });
 }
 
 function formatUsage(
@@ -121,22 +123,31 @@ interface SpanLayout {
   hasChildren: boolean;
 }
 
-function layoutSpans(spans: TraceSpan[]): Map<string, SpanLayout> {
+interface Waterfall {
+  layout: Map<string, SpanLayout>;
+  totalMs: number;
+  ticks: number[];
+}
+
+function layoutSpans(spans: TraceSpan[]): Waterfall {
   const layout = new Map<string, SpanLayout>();
   if (spans.length === 0) {
-    return layout;
+    return { layout, totalMs: 0, ticks: [] };
   }
   const byId = new Map(spans.map((span) => [span.spanId, span]));
   const parents = new Set(
     spans.map((span) => span.parentSpanId).filter((id): id is string => !!id),
   );
-  const starts = spans.map((span) => Date.parse(span.startedAt));
-  const base = Math.min(...starts);
-  const end = Math.max(
-    ...spans.map((span) =>
-      span.endedAt ? Date.parse(span.endedAt) : Date.parse(span.startedAt),
-    ),
-  );
+  // Fold rather than spread: Math.min(...arr) overflows the stack on a large
+  // trace, and a long-running Agent can produce thousands of spans.
+  let base = Infinity;
+  let end = -Infinity;
+  for (const span of spans) {
+    const from = Date.parse(span.startedAt);
+    const to = span.endedAt ? Date.parse(span.endedAt) : from;
+    if (from < base) base = from;
+    if (to > end) end = to;
+  }
   // A trace that starts and ends inside the same millisecond would divide by
   // zero; clamp so every bar still renders at a visible minimum width.
   const total = Math.max(1, end - base);
@@ -158,7 +169,28 @@ function layoutSpans(spans: TraceSpan[]): Map<string, SpanLayout> {
       hasChildren: parents.has(span.spanId),
     });
   }
-  return layout;
+  return { layout, totalMs: total, ticks: buildTicks(total) };
+}
+
+/** Round tick values for the time axis: 1/2/5 x 10^n, aiming for ~4 ticks. */
+function buildTicks(totalMs: number): number[] {
+  if (totalMs <= 1) {
+    return [];
+  }
+  const raw = totalMs / 4;
+  const magnitude = Math.pow(10, Math.floor(Math.log10(raw)));
+  const step =
+    [1, 2, 5, 10].map((m) => m * magnitude).find((c) => c >= raw) ??
+    10 * magnitude;
+  const ticks: number[] = [];
+  for (let at = step; at < totalMs; at += step) {
+    ticks.push(at);
+  }
+  return ticks;
+}
+
+function formatMs(ms: number): string {
+  return ms >= 1000 ? (ms / 1000).toFixed(ms >= 10_000 ? 0 : 1) + "s" : Math.round(ms) + "ms";
 }
 
 function TracePanel({
@@ -183,9 +215,20 @@ function TracePanel({
   const [filter, setFilter] = useState<TraceFilter>("all");
   const [collapsedIds, setCollapsedIds] = useState<Set<string>>(new Set());
   const selectedRowRef = useRef<HTMLButtonElement | null>(null);
-  const failing = pickFailingSpan(spans);
+  const problems = problemSpans(spans);
+  const failing = problems[0];
   const selected = spans.find((span) => span.spanId === selectedId) ?? failing;
-  const layout = layoutSpans(spans);
+  const { layout, ticks, totalMs } = layoutSpans(spans);
+  // Position within the ranked problem list, so the arrows can walk it.
+  const problemIndex = selected
+    ? problems.findIndex((span) => span.spanId === selected.spanId)
+    : -1;
+  const stepProblem = (delta: number) => {
+    if (problems.length === 0) return;
+    const from = problemIndex < 0 ? 0 : problemIndex + delta;
+    const next = (from + problems.length) % problems.length;
+    onSelect(problems[next].spanId);
+  };
 
   const toggleCollapsed = (spanId: string) => {
     setCollapsedIds((current) => {
@@ -273,13 +316,38 @@ function TracePanel({
         </div>
         <div className="trace-actions">
           {failing ? (
-            <button
-              type="button"
-              className="button button-ghost"
-              onClick={() => onSelect(failing.spanId)}
-            >
-              Open failing step
-            </button>
+            <>
+              <button
+                type="button"
+                className="button button-ghost"
+                onClick={() => onSelect(failing.spanId)}
+              >
+                Open failing step
+              </button>
+              {problems.length > 1 ? (
+                <span className="trace-nav">
+                  <button
+                    type="button"
+                    className="trace-nav-arrow"
+                    aria-label="Previous problem span"
+                    onClick={() => stepProblem(-1)}
+                  >
+                    ‹
+                  </button>
+                  <span className="trace-nav-count">
+                    {problemIndex < 0 ? 1 : problemIndex + 1}/{problems.length}
+                  </span>
+                  <button
+                    type="button"
+                    className="trace-nav-arrow"
+                    aria-label="Next problem span"
+                    onClick={() => stepProblem(1)}
+                  >
+                    ›
+                  </button>
+                </span>
+              ) : null}
+            </>
           ) : (
             <span className="trace-count">{spans.length} spans</span>
           )}
@@ -304,6 +372,26 @@ function TracePanel({
           ),
         )}
       </div>
+      {ticks.length > 0 ? (
+        <div className="trace-axis" aria-hidden="true">
+          <span className="trace-axis-label" />
+          <span className="trace-axis-track">
+            <span className="trace-axis-tick" style={{ left: "0%" }}>
+              0
+            </span>
+            {ticks.map((at) => (
+              <span
+                key={at}
+                className="trace-axis-tick"
+                style={{ left: (at / totalMs) * 100 + "%" }}
+              >
+                {formatMs(at)}
+              </span>
+            ))}
+          </span>
+          <span className="trace-axis-total">{formatMs(totalMs)}</span>
+        </div>
+      ) : null}
       <ol className="trace-list">
         {visible.map((span) => {
           const geometry = layout.get(span.spanId);

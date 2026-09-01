@@ -44,16 +44,34 @@ function hasDiagnostics(span: TraceSpan): boolean {
   });
 }
 
-function spanDepth(span: TraceSpan, byId: Map<string, TraceSpan>): number {
-  let depth = 0;
-  let current: TraceSpan | undefined = span;
-  const seen = new Set<string>();
-  while (current?.parentSpanId && !seen.has(current.spanId)) {
-    seen.add(current.spanId);
-    current = byId.get(current.parentSpanId);
-    depth += 1;
+/**
+ * Depth of every span, computed once. Walking the parent chain inside a sort
+ * comparator recomputes the same chain O(log n) times per span; this is O(n·d)
+ * and the result is reused by every caller that needs the hierarchy.
+ */
+export function spanDepths(spans: TraceSpan[]): Map<string, number> {
+  const byId = new Map(spans.map((span) => [span.spanId, span]));
+  const depths = new Map<string, number>();
+  const resolve = (span: TraceSpan, seen: Set<string>): number => {
+    const cached = depths.get(span.spanId);
+    if (cached !== undefined) {
+      return cached;
+    }
+    // A parent outside this trace, or a cycle, terminates the walk.
+    const parent = span.parentSpanId ? byId.get(span.parentSpanId) : undefined;
+    const depth =
+      !parent || seen.has(parent.spanId)
+        ? span.parentSpanId
+          ? 1
+          : 0
+        : resolve(parent, new Set(seen).add(span.spanId)) + 1;
+    depths.set(span.spanId, depth);
+    return depth;
+  };
+  for (const span of spans) {
+    resolve(span, new Set([span.spanId]));
   }
-  return depth;
+  return depths;
 }
 
 /**
@@ -63,18 +81,31 @@ function spanDepth(span: TraceSpan, byId: Map<string, TraceSpan>): number {
  * failure, so "Open failing step" lands on the denied policy rule or the
  * command that exited non-zero rather than on an empty envelope.
  */
-export function pickFailingSpan(spans: TraceSpan[]): TraceSpan | null {
+export function problemSpans(spans: TraceSpan[]): TraceSpan[] {
   const problems = spans.filter(
     (item) => item.status === "error" || item.status === "denied",
   );
   if (problems.length === 0) {
-    return null;
+    return [];
   }
-  const byId = new Map(spans.map((item) => [item.spanId, item]));
-  const ranked = [...problems].sort(
-    (left, right) => spanDepth(right, byId) - spanDepth(left, byId),
-  );
-  return ranked.find(hasDiagnostics) ?? ranked[0] ?? null;
+  const depths = spanDepths(spans);
+  const order = new Map(spans.map((span, index) => [span.spanId, index]));
+  return [...problems].sort((left, right) => {
+    // 1. A span that can explain the failure beats one that cannot.
+    const explains = Number(hasDiagnostics(right)) - Number(hasDiagnostics(left));
+    if (explains !== 0) return explains;
+    // 2. Innermost first — the wrappers on the path carry no detail.
+    const depth = (depths.get(right.spanId) ?? 0) - (depths.get(left.spanId) ?? 0);
+    if (depth !== 0) return depth;
+    // 3. Earliest first. When one Run fails several times the first failure is
+    //    usually the cause and the rest are cascades, so it is the better
+    //    landing point. This previously fell out of sort stability by accident.
+    return (order.get(left.spanId) ?? 0) - (order.get(right.spanId) ?? 0);
+  });
+}
+
+export function pickFailingSpan(spans: TraceSpan[]): TraceSpan | null {
+  return problemSpans(spans)[0] ?? null;
 }
 
 export function failingSpanIdentity(

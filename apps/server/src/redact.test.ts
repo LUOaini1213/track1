@@ -40,4 +40,30 @@ describe("redact", () => {
     expect(redacted).not.toContain(secret);
     expect(redacted).toContain("[REDACTED]");
   });
+
+  it("redacts the credential shapes public scanners treat as high-confidence", () => {
+    const cases: [string, string][] = [
+      ["eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk", "JWT"],
+      ["AKIAIOSFODNN7EXAMPLE", "AWS access key id"],
+      ["AKLTZmY1ZjYwNzk4NDU0NGQ2", "Volcengine access key id"],
+      ["xoxb-123456789012-abcdefghijkl", "Slack token"],
+      ["ghp_abcdefghijklmnopqrstuvwxyz0123", "GitHub token"],
+      ["AIzaSyD-1234567890abcdefghijklmnopqrstu", "Google API key"],
+    ];
+    for (const [secret, label] of cases) {
+      const out = redactText(`value ${secret} end`);
+      expect(out, label).toContain("[REDACTED]");
+      expect(out, label).not.toContain(secret);
+    }
+  });
+
+  it("keeps a connection string diagnosable while dropping the password", () => {
+    expect(redactText("postgres://appuser:hunter2@db.internal:5432/prod")).toBe(
+      "postgres://appuser:[REDACTED]@db.internal:5432/prod",
+    );
+  });
+
+  it("redacts a key that ends on a non-word character", () => {
+    expect(redactText("token sk-abcdefghijkl-")).toContain("[REDACTED]");
+  });
 });

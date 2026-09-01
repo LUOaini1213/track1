@@ -30,23 +30,36 @@ const now = () => new Date().toISOString();
  * spans already collected still carry the tokens the Run spent. The Track A gate
  * asks for the failing step *and* available usage on the same trace, so recover
  * it from the spans instead of persisting `usage: null`.
+ *
+ * Codex reports usage on `turn.completed` as a running total for the thread,
+ * not as a per-turn delta — `parseCodexEventLine` assigns rather than adds
+ * (codex-runner.ts), so the success path already reports the last value seen.
+ * Summing here would make a failed Run report a different number than a
+ * successful one for the same events, so take the last reading too.
  */
 function usageFromSpans(spans: TraceSpan[]): RunUsage | null {
-  let inputTokens = 0;
-  let outputTokens = 0;
+  let latest: RunUsage | null = null;
   for (const span of spans) {
     if (span.kind !== "llm") {
       continue;
     }
     const input = span.attributes["gen_ai.usage.input_tokens"];
     const output = span.attributes["gen_ai.usage.output_tokens"];
-    if (typeof input === "number") inputTokens += input;
-    if (typeof output === "number") outputTokens += output;
+    const cached = span.attributes["gen_ai.usage.cache_read.input_tokens"];
+    if (typeof input !== "number" && typeof output !== "number") {
+      continue;
+    }
+    latest = {
+      ...(typeof input === "number" ? { inputTokens: input } : {}),
+      ...(typeof cached === "number" ? { cachedInputTokens: cached } : {}),
+      ...(typeof output === "number" ? { outputTokens: output } : {}),
+    };
   }
-  if (inputTokens <= 0 && outputTokens <= 0) {
+  if (!latest) {
     return null;
   }
-  return { inputTokens, outputTokens };
+  const total = (latest.inputTokens ?? 0) + (latest.outputTokens ?? 0);
+  return total > 0 ? latest : null;
 }
 
 export class AgentService {

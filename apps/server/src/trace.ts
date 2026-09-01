@@ -205,6 +205,10 @@ export class TraceCollector {
             typeof usage.input_tokens === "number" ? usage.input_tokens : null,
           "gen_ai.usage.output_tokens":
             typeof usage.output_tokens === "number" ? usage.output_tokens : null,
+          "gen_ai.usage.cache_read.input_tokens":
+            typeof usage.cached_input_tokens === "number"
+              ? usage.cached_input_tokens
+              : null,
           // Provenance, not a conformance claim: these are the counts Codex
           // reports on turn.completed. OTel expects gen_ai.usage.input_tokens
           // to be the billed, cache-inclusive count; we do not know that the
