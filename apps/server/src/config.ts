@@ -29,6 +29,11 @@ const envSchema = z.object({
   // is no default.
   COST_INPUT_USD_PER_MTOK: z.coerce.number().nonnegative().optional(),
   COST_OUTPUT_USD_PER_MTOK: z.coerce.number().nonnegative().optional(),
+  // OTLP/HTTP export. Unset means no export; the trace endpoint is unaffected.
+  OTEL_EXPORTER_OTLP_ENDPOINT: z.string().url().optional(),
+  OTEL_EXPORTER_OTLP_HEADERS: z.string().optional(),
+  OTEL_SERVICE_NAME: z.string().default("launchpad-trace-plane"),
+  OTEL_EXPORTER_OTLP_TIMEOUT: z.coerce.number().int().min(100).default(5_000),
   CODEX_TIMEOUT_MS: z.coerce.number().int().min(1_000).default(600_000),
   CODEX_MAX_OUTPUT_BYTES: z.coerce.number().int().min(65_536).default(2_097_152),
   RUNTIME_PROVIDER: z.enum(["local-process", "container"]).default("local-process"),
@@ -94,6 +99,22 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
     codexHome: path.resolve(env.CODEX_HOME),
     codexBin: env.CODEX_BIN,
     codexSandboxMode: env.CODEX_SANDBOX_MODE,
+    otlpEndpoint: env.OTEL_EXPORTER_OTLP_ENDPOINT ?? "",
+    otlpServiceName: env.OTEL_SERVICE_NAME,
+    otlpTimeoutMs: env.OTEL_EXPORTER_OTLP_TIMEOUT,
+    // Standard OTEL_EXPORTER_OTLP_HEADERS form: comma-separated key=value.
+    otlpHeaders: Object.fromEntries(
+      (env.OTEL_EXPORTER_OTLP_HEADERS ?? "")
+        .split(",")
+        .map((pair) => pair.trim())
+        .filter(Boolean)
+        .map((pair) => {
+          const at = pair.indexOf("=");
+          return at < 0
+            ? [pair, ""]
+            : [pair.slice(0, at).trim(), pair.slice(at + 1).trim()];
+        }),
+    ) as Record<string, string>,
     costRates:
       env.COST_INPUT_USD_PER_MTOK !== undefined &&
       env.COST_OUTPUT_USD_PER_MTOK !== undefined

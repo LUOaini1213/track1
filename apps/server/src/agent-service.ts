@@ -8,6 +8,7 @@ import {
   inspectForSecretExfiltration,
 } from "./policy.js";
 import { redactText, registerSecrets } from "./redact.js";
+import { exportTrace } from "./otlp.js";
 import { SpanStore } from "./span-store.js";
 import { JsonStore } from "./store.js";
 import { estimateCostUsd } from "./cost.js";
@@ -503,7 +504,27 @@ export class AgentService {
     collector: TraceCollector,
   ): Promise<void> {
     collector.flush();
-    await this.spanStore.write(runId, collector.snapshot());
+    const spans = collector.snapshot();
+    await this.spanStore.write(runId, spans);
+    // Fire-and-forget: an unreachable trace backend must never turn a finished
+    // Run into a failed one. The Run's own record is already durable above.
+    void exportTrace(this.config, runId, spans)
+      .then((result) => {
+        if (result) {
+          this.log(
+            "warn",
+            "exported " + result.exported + " spans for run " + runId + " to " +
+              result.endpoint,
+          );
+        }
+      })
+      .catch((error: unknown) => {
+        this.log(
+          "warn",
+          "OTLP export failed for run " + runId + ": " +
+            (error instanceof Error ? error.message : String(error)),
+        );
+      });
   }
 
   private async executeRun(agentAtStart: Agent, run: AgentRun): Promise<void> {

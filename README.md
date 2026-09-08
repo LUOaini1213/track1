@@ -40,6 +40,7 @@ from the official starter. This fork adds the missing observability plane.
 - Fastify control plane with asynchronous Run state
 - **Trace Plane:** correlated span waterfall per Run, `GET /api/runs/:id/trace`,
   named per the OpenTelemetry GenAI conventions (Development stage)
+- **OTLP export** of every finished Run to any OpenTelemetry collector
 - **Redaction** of key-like strings before JSON persist and HTTP
 - **Policy deny** for secret-exfiltration prompts/commands (protected fixture `.secrets/demo.env`)
 - Persistent Agent workspaces and Codex sessions
@@ -269,6 +270,9 @@ cp deploy/volcengine/terraform.tfvars.example \
 | `CODEX_BIN` | `codex` | Codex CLI entrypoint. **Required on Windows:** absolute path to `…/@openai/codex/bin/codex.js`, which is run under Node. |
 | `COST_INPUT_USD_PER_MTOK` | Unset | Input price per million tokens for the configured model. Unset means the UI shows tokens with no dollar figure. |
 | `COST_OUTPUT_USD_PER_MTOK` | Unset | Output price per million tokens. Both must be set for a cost estimate to appear. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | Unset | OTLP/HTTP collector base URL. Each finished Run is posted to `<endpoint>/v1/traces`. Unset disables export. |
+| `OTEL_EXPORTER_OTLP_HEADERS` | Unset | Comma-separated `key=value` headers for the collector, e.g. an API key. |
+| `OTEL_SERVICE_NAME` | `launchpad-trace-plane` | `service.name` on exported spans. |
 | `CODEX_SANDBOX_MODE` | `workspace-write` | Codex inner sandbox mode. |
 | `TRACE_CAPTURE_CONTENT` | `true` | Mirrors OTel's Opt-In rule for GenAI content. `false` withholds commands, error text and workspace paths from spans while keeping status, exit codes and the tree. |
 | `CODEX_TIMEOUT_MS` | `600000` | Maximum duration of one turn. |

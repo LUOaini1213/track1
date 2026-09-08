@@ -94,8 +94,24 @@ paths become `[content capture disabled]` while status, `exitCode`,
 `gen_ai.tool.name` and the span tree survive — the failure stays diagnosable
 without the content.
 
-Native OTLP export is post-hackathon roadmap; today the trace is served as JSON
-from `GET /api/runs/:id/trace` and exported from the Playground.
+## OTLP export
+
+Set `OTEL_EXPORTER_OTLP_ENDPOINT` and every finished Run is posted to
+`<endpoint>/v1/traces` as OTLP/HTTP JSON, so the spans land in whatever the
+operator already runs — Jaeger, Tempo, Datadog, a collector — with no new UI to
+adopt. `OTEL_EXPORTER_OTLP_HEADERS` carries credentials in the standard
+comma-separated `key=value` form.
+
+Two mapping notes. OTLP ids are 16 and 8 raw bytes; ours are UUIDs, so they are
+hashed to that width — deterministically, so re-exporting a Run updates its
+trace rather than creating a second one. And OTLP's `kind` describes a call's
+role rather than the work's category, so `execute_tool` and `chat` spans are
+CLIENT, everything else is INTERNAL, and our own taxonomy travels as the
+`launchpad.span.kind` attribute.
+
+Export is best effort and runs after the Run's own record is durable: an
+unreachable collector logs a warning and never turns a finished Run into a
+failed one.
 
 ## Demo
 
