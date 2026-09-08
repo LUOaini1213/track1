@@ -34,6 +34,12 @@ const envSchema = z.object({
   OTEL_EXPORTER_OTLP_HEADERS: z.string().optional(),
   OTEL_SERVICE_NAME: z.string().default("launchpad-trace-plane"),
   OTEL_EXPORTER_OTLP_TIMEOUT: z.coerce.number().int().min(100).default(5_000),
+  // Collectors and vendors default to a 4MB body; stay under it.
+  OTEL_EXPORTER_OTLP_MAX_BATCH_BYTES: z.coerce
+    .number()
+    .int()
+    .min(64_000)
+    .default(3_500_000),
   CODEX_TIMEOUT_MS: z.coerce.number().int().min(1_000).default(600_000),
   CODEX_MAX_OUTPUT_BYTES: z.coerce.number().int().min(65_536).default(2_097_152),
   RUNTIME_PROVIDER: z.enum(["local-process", "container"]).default("local-process"),
@@ -102,6 +108,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
     otlpEndpoint: env.OTEL_EXPORTER_OTLP_ENDPOINT ?? "",
     otlpServiceName: env.OTEL_SERVICE_NAME,
     otlpTimeoutMs: env.OTEL_EXPORTER_OTLP_TIMEOUT,
+    otlpMaxBatchBytes: env.OTEL_EXPORTER_OTLP_MAX_BATCH_BYTES,
     // Standard OTEL_EXPORTER_OTLP_HEADERS form: comma-separated key=value.
     otlpHeaders: Object.fromEntries(
       (env.OTEL_EXPORTER_OTLP_HEADERS ?? "")

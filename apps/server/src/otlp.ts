@@ -30,9 +30,45 @@ function toSpanId(value: string): string {
 }
 
 /** OTLP timestamps are nanoseconds since the epoch, as a decimal string. */
-function toUnixNano(iso: string): string {
+function toUnixNano(iso: string): string | null {
   const ms = Date.parse(iso);
-  return Number.isFinite(ms) ? String(BigInt(ms) * 1_000_000n) : "0";
+  // Falling back to 0 would place the span at the epoch, and a collector would
+  // show a 1970 trace that nobody can tie back to anything. A span whose start
+  // cannot be read is dropped instead.
+  return Number.isFinite(ms) ? String(BigInt(ms) * 1_000_000n) : null;
+}
+
+/** Spans a collector can accept: a readable start time is the minimum. */
+export function exportableSpans(spans: TraceSpan[]): TraceSpan[] {
+  return spans.filter((span) => toUnixNano(span.startedAt) !== null);
+}
+
+/**
+ * Split into batches a collector will accept. The OTLP/HTTP default body limit
+ * is 4MB in the collector and most vendors; a single Run of 20k spans
+ * serialises to 6.6MB, so an unbatched export of a long Run would be rejected
+ * whole rather than partially delivered.
+ */
+export function batchSpans(spans: TraceSpan[], maxBytes: number): TraceSpan[][] {
+  const batches: TraceSpan[][] = [];
+  let current: TraceSpan[] = [];
+  let size = 0;
+  for (const span of spans) {
+    // Measuring the encoded span is the honest unit; JSON.stringify of the raw
+    // span is within a few percent of it and far cheaper than encoding twice.
+    const cost = JSON.stringify(span).length + 256;
+    if (current.length > 0 && size + cost > maxBytes) {
+      batches.push(current);
+      current = [];
+      size = 0;
+    }
+    current.push(span);
+    size += cost;
+  }
+  if (current.length > 0) {
+    batches.push(current);
+  }
+  return batches;
 }
 
 /**
@@ -78,11 +114,14 @@ export function toOtlpPayload(
                 : {}),
               name: span.name,
               kind: toOtlpKind(span.kind),
-              startTimeUnixNano: toUnixNano(span.startedAt),
+              startTimeUnixNano: toUnixNano(span.startedAt) ?? "0",
               // An unfinished span still has to carry an end time; use its start
               // so the receiver sees a zero-length span rather than one running
               // since 1970.
-              endTimeUnixNano: toUnixNano(span.endedAt ?? span.startedAt),
+              endTimeUnixNano:
+                toUnixNano(span.endedAt ?? span.startedAt) ??
+                toUnixNano(span.startedAt) ??
+                "0",
               attributes: [
                 { key: "launchpad.span.kind", value: { stringValue: span.kind } },
                 { key: "launchpad.agent.id", value: { stringValue: span.agentId } },
@@ -111,6 +150,7 @@ export function toOtlpPayload(
 export interface OtlpExportResult {
   exported: number;
   endpoint: string;
+  batches: number;
 }
 
 /**
@@ -122,31 +162,35 @@ export async function exportTrace(
   runId: string,
   spans: TraceSpan[],
 ): Promise<OtlpExportResult | null> {
-  if (!config.otlpEndpoint || spans.length === 0) {
+  const usable = exportableSpans(spans);
+  if (!config.otlpEndpoint || usable.length === 0) {
     return null;
   }
   const endpoint = config.otlpEndpoint.replace(/\/+$/, "") + "/v1/traces";
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), config.otlpTimeoutMs);
-  try {
-    const response = await fetch(endpoint, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        ...config.otlpHeaders,
-      },
-      body: JSON.stringify(
-        toOtlpPayload(spans, { serviceName: config.otlpServiceName, runId }),
-      ),
-      signal: controller.signal,
-    });
-    if (!response.ok) {
-      throw new Error(
-        "OTLP endpoint answered " + response.status + " " + response.statusText,
-      );
+  const batches = batchSpans(usable, config.otlpMaxBatchBytes);
+  for (const batch of batches) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), config.otlpTimeoutMs);
+    try {
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          ...config.otlpHeaders,
+        },
+        body: JSON.stringify(
+          toOtlpPayload(batch, { serviceName: config.otlpServiceName, runId }),
+        ),
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        throw new Error(
+          "OTLP endpoint answered " + response.status + " " + response.statusText,
+        );
+      }
+    } finally {
+      clearTimeout(timer);
     }
-    return { exported: spans.length, endpoint };
-  } finally {
-    clearTimeout(timer);
   }
+  return { exported: usable.length, endpoint, batches: batches.length };
 }

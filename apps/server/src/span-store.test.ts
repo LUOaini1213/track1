@@ -110,4 +110,25 @@ describe("SpanStore", () => {
     const { readdir } = await import("node:fs/promises");
     expect((await readdir(root)).filter((f) => f.includes(".tmp"))).toEqual([]);
   }, 20_000);
+
+  it("does not accumulate a queue entry for every Run it has written", async () => {
+    // The first version of the write queue cleared its entry with a truthiness
+    // check on a map it had just populated, so the branch could never fire and
+    // the map grew by one entry per Run for the life of the process.
+    const { spans } = await store();
+    const internals = spans as unknown as { queues: Map<string, unknown> };
+    const ids = Array.from(
+      { length: 60 },
+      (_, i) => "5" + String(i).padStart(7, "0") + "-0000-4000-8000-000000000000",
+    );
+    for (const id of ids) {
+      await spans.write(id, [span("s")]);
+    }
+    expect(internals.queues.size).toBe(0);
+
+    await Promise.all(
+      Array.from({ length: 20 }, () => spans.write(ids[0]!, [span("s")])),
+    );
+    expect(internals.queues.size).toBe(0);
+  }, 20_000);
 });

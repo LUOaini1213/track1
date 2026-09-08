@@ -70,16 +70,16 @@ export class SpanStore {
     const mine = previous
       .catch(() => undefined)
       .then(() => this.writeNow(runId, spans));
-    this.queues.set(
-      runId,
-      mine.catch(() => undefined),
-    );
+    // Identity, not existence: `get` returns the entry that was just stored, so
+    // a truthiness check here could never fire and the map grew by one entry for
+    // every Run the process ever wrote. Compare against this write's own tail
+    // and only the last writer for a Run clears it.
+    const tail = mine.catch(() => undefined);
+    this.queues.set(runId, tail);
     try {
       await mine;
     } finally {
-      // Drop the entry once this write is the last one queued, so the map does
-      // not grow with every Run the process has ever seen.
-      if (this.queues.get(runId) === undefined) {
+      if (this.queues.get(runId) === tail) {
         this.queues.delete(runId);
       }
     }

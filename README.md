@@ -273,6 +273,7 @@ cp deploy/volcengine/terraform.tfvars.example \
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | Unset | OTLP/HTTP collector base URL. Each finished Run is posted to `<endpoint>/v1/traces`. Unset disables export. |
 | `OTEL_EXPORTER_OTLP_HEADERS` | Unset | Comma-separated `key=value` headers for the collector, e.g. an API key. |
 | `OTEL_SERVICE_NAME` | `launchpad-trace-plane` | `service.name` on exported spans. |
+| `OTEL_EXPORTER_OTLP_MAX_BATCH_BYTES` | `3500000` | Split a large trace into several POSTs, so a long Run stays under the collector's body limit. |
 | `CODEX_SANDBOX_MODE` | `workspace-write` | Codex inner sandbox mode. |
 | `TRACE_CAPTURE_CONTENT` | `true` | Mirrors OTel's Opt-In rule for GenAI content. `false` withholds commands, error text and workspace paths from spans while keeping status, exit codes and the tree. |
 | `CODEX_TIMEOUT_MS` | `600000` | Maximum duration of one turn. |
