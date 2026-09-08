@@ -14,7 +14,7 @@
     "dev": "concurrently -n server,web -c cyan,magenta \"npm run dev -w @launchpad/server\" \"npm run dev -w @launchpad/web\"",
     "build": "npm run build -w @launchpad/contract && npm run build -w @launchpad/web && npm run build -w @launchpad/server",
     "typecheck": "npm run build -w @launchpad/contract && npm run typecheck --workspaces --if-present",
-    "test": "npm run test -w @launchpad/contract && npm run test -w @launchpad/server",
+    "test": "npm run test -w @launchpad/contract && npm run test -w @launchpad/server && npm run test -w @launchpad/web",
     "check": "npm run typecheck && npm run test && npm run build && npm run smoke",
     "poc": "./scripts/start-local-poc.sh",
     "start": "npm run start -w @launchpad/server",
