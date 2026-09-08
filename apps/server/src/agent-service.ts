@@ -204,6 +204,19 @@ export class AgentService {
     if (current.status === "busy") {
       throw new HttpError(409, "Stop the active run before editing this Agent");
     }
+    // Codex reads AGENTS.md, so write it before committing: previously the store
+    // was updated first and a write failure left a 500 for the caller, a store
+    // saying "updated", and an AGENTS.md still holding the old instructions.
+    await this.workspaces.writeInstructions({
+      ...current,
+      ...(input.name !== undefined ? { name: input.name.trim() } : {}),
+      ...(input.description !== undefined
+        ? { description: input.description.trim() }
+        : {}),
+      ...(input.instructions !== undefined
+        ? { instructions: input.instructions.trim() }
+        : {}),
+    });
     const updated = await this.store.mutate((database) => {
       const agent = database.agents.find((item) => item.id === id);
       if (!agent) {
@@ -219,23 +232,34 @@ export class AgentService {
       agent.updatedAt = now();
       return structuredClone(agent);
     });
-    await this.workspaces.writeInstructions(updated);
     return updated;
   }
 
-  async deleteAgent(id: string): Promise<{ archivedWorkspace: string }> {
+  async deleteAgent(
+    id: string,
+  ): Promise<{ archivedWorkspace: string | null }> {
     const agent = this.getAgent(id);
     // Same ordering as stopAgent, and for a sharper reason: archive() renames
     // the workspace, and without the mark a Run admitted a moment earlier kept
     // executing inside the directory being moved out from under it.
     await this.setStatus(id, "stopped");
     await this.cancelExecution(id);
-    const archivedWorkspace = await this.workspaces.archive(agent);
+    // Remove the record first. Archiving used to come first and, when it threw,
+    // left the Agent in the store with its workspace already moved — every
+    // retry then failed with ENOENT and the Agent could never be deleted.
     await this.store.mutate((database) => {
       database.agents = database.agents.filter((item) => item.id !== id);
       database.messages = database.messages.filter((item) => item.agentId !== id);
       database.runs = database.runs.filter((item) => item.agentId !== id);
     });
+    const archivedWorkspace = await this.workspaces.archive(agent);
+    if (!archivedWorkspace) {
+      this.log(
+        "warn",
+        "agent " + id + " deleted, but its workspace could not be archived: " +
+          agent.workspacePath,
+      );
+    }
     return { archivedWorkspace };
   }
 

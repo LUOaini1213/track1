@@ -352,4 +352,88 @@ describe("Agent lifecycle", () => {
     expect(span?.durationMs).not.toBeNull();
     expect(span?.attributes.unterminated).toBe(true);
   }, 20_000);
+
+  it("deletes an Agent whose workspace directory is gone", async () => {
+    // Workspace paths are stored absolute, so a moved checkout or a removed
+    // worktree leaves an Agent pointing at nothing. archive() threw ENOENT and
+    // deleteAgent ran it first, so every DELETE answered 500 and the Agent
+    // stayed in the list permanently.
+    const { rm } = await import("node:fs/promises");
+    const service = await makeService();
+    const agent = await service.createAgent({ name: "Orphan" });
+    await rm(agent.workspacePath, { recursive: true, force: true });
+
+    const result = await service.deleteAgent(agent.id);
+    expect(result.archivedWorkspace).toBeNull();
+    expect(service.listAgents()).toHaveLength(0);
+    expect(() => service.getAgent(agent.id)).toThrow();
+  }, 20_000);
+
+  it("does not strand an Agent when the delete write fails after archiving", async () => {
+    // The ordering, not the ENOENT tolerance: archiving first meant a failed
+    // store write left the workspace already moved and the Agent still listed,
+    // so every retry hit ENOENT and the Agent became undeletable.
+    // deleteAgent marks the Agent stopped before anything else, so the failure
+    // has to skip that write or it never reaches the archive step at all — the
+    // first version of this test armed the wrong one and passed either way.
+    let writesUntilFailure = -1;
+    const service = await makeService(new FakeRunner(), (store) => {
+      const realMutate = store.mutate.bind(store);
+      store.mutate = (async (mutation: never) => {
+        if (writesUntilFailure >= 0) {
+          if (writesUntilFailure === 0) {
+            writesUntilFailure = -1;
+            throw new Error("EPERM: operation not permitted, rename");
+          }
+          writesUntilFailure -= 1;
+        }
+        return realMutate(mutation);
+      }) as typeof store.mutate;
+      return store;
+    });
+    const agent = await service.createAgent({ name: "Doomed" });
+    const workspacePath = agent.workspacePath;
+
+    writesUntilFailure = 1; // let setStatus through, fail the removal itself
+    await expect(service.deleteAgent(agent.id)).rejects.toThrow(/EPERM/);
+
+    // The workspace must still be where the Agent says it is, so a retry works.
+    const { access } = await import("node:fs/promises");
+    await expect(access(workspacePath)).resolves.toBeUndefined();
+    const retry = await service.deleteAgent(agent.id);
+    expect(retry.archivedWorkspace).not.toBeNull();
+    expect(service.listAgents()).toHaveLength(0);
+  }, 20_000);
+
+  it("leaves both sides untouched when AGENTS.md cannot be written", async () => {
+    // AGENTS.md is what Codex actually reads. Committing the store first meant a
+    // failed write returned 500 while the store said "updated" and the file the
+    // model reads still held the old instructions.
+    const { rm } = await import("node:fs/promises");
+    const service = await makeService();
+    const agent = await service.createAgent({
+      name: "Editable",
+      instructions: "original instructions",
+    });
+    const workspaces = (service as unknown as { workspaces: WorkspaceManager })
+      .workspaces;
+    const realWrite = workspaces.writeInstructions.bind(workspaces);
+    workspaces.writeInstructions = async () => {
+      throw new Error("EACCES: permission denied, open 'AGENTS.md'");
+    };
+
+    await expect(
+      service.updateAgent(agent.id, { instructions: "new instructions" }),
+    ).rejects.toThrow(/EACCES/);
+    expect(service.getAgent(agent.id).instructions).toBe("original instructions");
+
+    workspaces.writeInstructions = realWrite;
+    const updated = await service.updateAgent(agent.id, {
+      instructions: "new instructions",
+    });
+    expect(updated.instructions).toBe("new instructions");
+    await rm(agent.workspacePath, { recursive: true, force: true }).catch(
+      () => undefined,
+    );
+  }, 20_000);
 });

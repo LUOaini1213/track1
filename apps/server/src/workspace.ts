@@ -82,17 +82,40 @@ export class WorkspaceManager {
     ]
       .filter((line, index, lines) => !(line === "" && lines[index - 1] === ""))
       .join("\n");
+    await mkdir(agent.workspacePath, { recursive: true });
     await writeFile(path.join(agent.workspacePath, "AGENTS.md"), content, "utf8");
   }
 
-  async archive(agent: Agent): Promise<string> {
+  /**
+   * Move an Agent's workspace aside, or report that there was nothing to move.
+   *
+   * Workspace paths are stored absolute, so a moved checkout, a removed
+   * worktree or a hand-deleted directory leaves an Agent pointing at nothing.
+   * Throwing here made that Agent permanently undeletable: every DELETE
+   * answered 500 and the record stayed in the list forever. An orphaned
+   * directory is recoverable; an Agent that cannot be removed is not.
+   */
+  async archive(agent: Agent): Promise<string | null> {
     const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
     const destination = path.join(
       this.root,
       ".deleted",
       agent.id + "-" + timestamp,
     );
-    await rename(agent.workspacePath, destination);
-    return destination;
+    try {
+      await rename(agent.workspacePath, destination);
+      return destination;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code ?? "";
+      if (code === "ENOENT") {
+        return null;
+      }
+      // EPERM/EBUSY on Windows means something still holds the directory open.
+      // Report it to the caller rather than blocking the delete.
+      if (["EPERM", "EBUSY", "EACCES"].includes(code)) {
+        return null;
+      }
+      throw error;
+    }
   }
 }
