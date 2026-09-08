@@ -1,12 +1,8 @@
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
 import type { AppConfig } from "./config.js";
-import {
-  buildCodexArgs,
-  codexExitDetail,
-  parseCodexEventLine,
-} from "./codex-runner.js";
-import { PolicyDeniedError, RunCancelledError } from "./errors.js";
+import { buildCodexArgs } from "./codex-runner.js";
+import { streamCodexProcess } from "./codex-stream.js";
 import type {
   AgentRunner,
   RunUsage,
@@ -24,13 +20,6 @@ interface ActiveContainer {
   outputExceeded: boolean;
   settled: Promise<void>;
   termination: Promise<void> | null;
-}
-
-interface ParsedEvents {
-  messages: string[];
-  threadId: string | null;
-  usage: RunUsage | null;
-  errors: string[];
 }
 
 export function containerName(agentId: string, instanceId = "default"): string {
@@ -170,55 +159,6 @@ export class ContainerCodexRunner implements AgentRunner {
     };
     this.active.set(request.agentId, active);
 
-    const parsed: ParsedEvents = {
-      messages: [],
-      threadId: request.threadId,
-      usage: null,
-      errors: [],
-    };
-    let stdout = "";
-    let stderr = "";
-    let totalBytes = 0;
-    let policyError: PolicyDeniedError | null = null;
-    let sinkError: unknown = null;
-
-    // Same reasoning as CodexRunner.sink: this runs inside a stdout "data"
-    // handler, so a rethrow becomes an uncaught exception and takes the server
-    // down instead of failing one Run.
-    const sink = (event: Record<string, unknown>) => {
-      try {
-        request.onCodexEvent?.(event);
-      } catch (error) {
-        if (error instanceof PolicyDeniedError) {
-          policyError = error;
-        } else if (!sinkError) {
-          sinkError = error;
-        }
-        void this.removeContainer(active);
-      }
-    };
-
-    const consume = (chunk: Buffer, target: "stdout" | "stderr") => {
-      totalBytes += chunk.byteLength;
-      if (totalBytes > this.config.codexMaxOutputBytes) {
-        active.outputExceeded = true;
-        void this.removeContainer(active);
-        return;
-      }
-      if (target === "stdout") {
-        stdout += chunk.toString("utf8");
-        const lines = stdout.split(/\r?\n/);
-        stdout = lines.pop() ?? "";
-        for (const line of lines) parseCodexEventLine(line, parsed, sink);
-      } else {
-        stderr += chunk.toString("utf8");
-        if (stderr.length > 16_384) stderr = stderr.slice(-16_384);
-      }
-    };
-
-    child.stdout.on("data", (chunk: Buffer) => consume(chunk, "stdout"));
-    child.stderr.on("data", (chunk: Buffer) => consume(chunk, "stderr"));
-
     const timeout = setTimeout(() => {
       active.timedOut = true;
       void this.removeContainer(active);
@@ -226,39 +166,22 @@ export class ContainerCodexRunner implements AgentRunner {
     timeout.unref();
 
     try {
-      const exitCode = await new Promise<number>((resolve, reject) => {
-        child.once("error", reject);
-        child.once("close", (code) => resolve(code ?? 1));
+      // Identical body to CodexRunner from here: only spawning and termination
+      // differ between the two. Sharing it is what stops the copies drifting,
+      // as they did when the dead `??` exit-detail chain was fixed in one and
+      // left in the other.
+      return await streamCodexProcess({
+        child,
+        request,
+        config: this.config,
+        signals: active,
+        terminate: () => {
+          void this.removeContainer(active);
+        },
+        label: this.config.containerEngine + " Runtime",
+        timeoutMessage:
+          "Runtime timed out after " + this.config.codexTimeoutMs + " ms",
       });
-      if (stdout.trim()) parseCodexEventLine(stdout.trim(), parsed, sink);
-      if (policyError) throw policyError;
-      if (sinkError) throw sinkError;
-      if (active.cancelled) throw new RunCancelledError();
-      if (active.timedOut) {
-        throw new Error("Runtime timed out after " + this.config.codexTimeoutMs + " ms");
-      }
-      if (active.outputExceeded) {
-        throw new Error("Codex output exceeded CODEX_MAX_OUTPUT_BYTES");
-      }
-      if (exitCode !== 0) {
-        const detail = codexExitDetail(parsed, stderr);
-        throw new Error(
-          this.config.containerEngine +
-            " Runtime exited with code " +
-            exitCode +
-            ": " +
-            detail,
-        );
-      }
-      const output = parsed.messages.at(-1)?.trim();
-      if (!output) {
-        const detail = parsed.errors.at(-1) || stderr.trim();
-        throw new Error(
-          "Codex completed without an agent message" +
-            (detail ? ": " + detail : ""),
-        );
-      }
-      return { output, threadId: parsed.threadId, usage: parsed.usage };
     } finally {
       clearTimeout(timeout);
       this.active.delete(request.agentId);

@@ -3,6 +3,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
 import type { AppConfig } from "./config.js";
 import { PolicyDeniedError, RunCancelledError } from "./errors.js";
+import { streamCodexProcess } from "./codex-stream.js";
 import type {
   AgentRunner,
   RunUsage,
@@ -200,61 +201,6 @@ export class CodexRunner implements AgentRunner {
     };
     this.active.set(request.agentId, active);
 
-    const parsed: ParsedEvents = {
-      messages: [],
-      threadId: request.threadId,
-      usage: null,
-      errors: [],
-    };
-    let stdout = "";
-    let stderr = "";
-    let totalBytes = 0;
-    let policyError: PolicyDeniedError | null = null;
-    let sinkError: unknown = null;
-
-    // `sink` runs inside a stdout "data" handler, where nothing above it can
-    // catch. Rethrowing turned any bug in the event pipeline — recordCodexEvent,
-    // commandFromCodexEvent, the policy gate — into an uncaught exception that
-    // killed the whole server and every other Agent's Run. Capture it, stop this
-    // child, and let the caller fail this Run alone.
-    const sink = (event: Record<string, unknown>) => {
-      try {
-        request.onCodexEvent?.(event);
-      } catch (error) {
-        if (error instanceof PolicyDeniedError) {
-          policyError = error;
-        } else if (!sinkError) {
-          sinkError = error;
-        }
-        this.terminate(active);
-      }
-    };
-
-    const consume = (chunk: Buffer, target: "stdout" | "stderr") => {
-      totalBytes += chunk.byteLength;
-      if (totalBytes > this.config.codexMaxOutputBytes) {
-        active.outputExceeded = true;
-        this.terminate(active);
-        return;
-      }
-      if (target === "stdout") {
-        stdout += chunk.toString("utf8");
-        const lines = stdout.split(/\r?\n/);
-        stdout = lines.pop() ?? "";
-        for (const line of lines) {
-          parseCodexEventLine(line, parsed, sink);
-        }
-      } else {
-        stderr += chunk.toString("utf8");
-        if (stderr.length > 16_384) {
-          stderr = stderr.slice(-16_384);
-        }
-      }
-    };
-
-    child.stdout.on("data", (chunk: Buffer) => consume(chunk, "stdout"));
-    child.stderr.on("data", (chunk: Buffer) => consume(chunk, "stderr"));
-
     const timeout = setTimeout(() => {
       active.timedOut = true;
       this.terminate(active);
@@ -262,51 +208,16 @@ export class CodexRunner implements AgentRunner {
     timeout.unref();
 
     try {
-      const exitCode = await new Promise<number>((resolve, reject) => {
-        child.once("error", reject);
-        child.once("close", (code) => resolve(code ?? 1));
+      return await streamCodexProcess({
+        child,
+        request,
+        config: this.config,
+        signals: active,
+        terminate: () => this.terminate(active),
+        label: "Codex",
+        timeoutMessage:
+          "Codex timed out after " + this.config.codexTimeoutMs + " ms",
       });
-      if (stdout.trim()) {
-        parseCodexEventLine(stdout.trim(), parsed, sink);
-      }
-      if (policyError) {
-        throw policyError;
-      }
-      if (sinkError) {
-        throw sinkError;
-      }
-      if (active.cancelled) {
-        throw new RunCancelledError();
-      }
-      if (active.timedOut) {
-        throw new Error("Codex timed out after " + this.config.codexTimeoutMs + " ms");
-      }
-      if (active.outputExceeded) {
-        throw new Error("Codex output exceeded CODEX_MAX_OUTPUT_BYTES");
-      }
-      if (exitCode !== 0) {
-        throw new Error(
-          "Codex exited with code " +
-            exitCode +
-            ": " +
-            codexExitDetail(parsed, stderr),
-        );
-      }
-      const output = parsed.messages.at(-1)?.trim();
-      if (!output) {
-        // Codex can report a fatal error and still exit 0 (a 401, say). Without
-        // the detail the operator was told only that no message arrived.
-        const detail = parsed.errors.at(-1) || stderr.trim();
-        throw new Error(
-          "Codex completed without an agent message" +
-            (detail ? ": " + detail : ""),
-        );
-      }
-      return {
-        output,
-        threadId: parsed.threadId,
-        usage: parsed.usage,
-      };
     } finally {
       clearTimeout(timeout);
       if (active.forceKillTimer) clearTimeout(active.forceKillTimer);
