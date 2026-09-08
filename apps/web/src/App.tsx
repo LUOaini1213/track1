@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError, setAuthToken } from "./api";
+import { problemSpans } from "@launchpad/contract";
 import type {
   Agent,
   AgentRun,
@@ -49,53 +50,6 @@ type TraceFilter =
   | "tool"
   | "policy"
   | "sandbox";
-
-// Mirrors pickFailingSpan in apps/server/src/run-compare.ts. A failure marks
-// every span on the path to it, but run.execute and runtime.spawn are wrappers
-// with no diagnostics, so "Open failing step" must land on the innermost span
-// that actually explains the failure.
-const DIAGNOSTIC_KEYS = [
-  "errorText",
-  "exitCode",
-  "reason",
-  "ruleId",
-  "error",
-  "failedStep",
-];
-
-function problemSpans(spans: TraceSpan[]): TraceSpan[] {
-  const problems = spans.filter(
-    (span) => span.status === "error" || span.status === "denied",
-  );
-  if (problems.length === 0) {
-    return [];
-  }
-  const byId = new Map(spans.map((span) => [span.spanId, span]));
-  const order = new Map(spans.map((span, index) => [span.spanId, index]));
-  const depthOf = (span: TraceSpan): number => {
-    let depth = 0;
-    let current: TraceSpan | undefined = span;
-    const seen = new Set<string>();
-    while (current?.parentSpanId && !seen.has(current.spanId)) {
-      seen.add(current.spanId);
-      current = byId.get(current.parentSpanId);
-      depth += 1;
-    }
-    return depth;
-  };
-  const explains = (span: TraceSpan) =>
-    DIAGNOSTIC_KEYS.some((key) => {
-      const value = span.attributes[key];
-      return value !== undefined && value !== null;
-    });
-  return [...problems].sort((left, right) => {
-    const byExplains = Number(explains(right)) - Number(explains(left));
-    if (byExplains !== 0) return byExplains;
-    const byDepth = depthOf(right) - depthOf(left);
-    if (byDepth !== 0) return byDepth;
-    return (order.get(left.spanId) ?? 0) - (order.get(right.spanId) ?? 0);
-  });
-}
 
 function formatUsage(
   usage: AgentRun["usage"],

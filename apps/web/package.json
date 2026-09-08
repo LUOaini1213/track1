@@ -12,7 +12,8 @@
     "@vitejs/plugin-react": "^5.1.1",
     "vite": "^7.2.4",
     "react": "^19.2.0",
-    "react-dom": "^19.2.0"
+    "react-dom": "^19.2.0",
+    "@launchpad/contract": "*"
   },
   "devDependencies": {
     "@types/react": "^19.2.7",
