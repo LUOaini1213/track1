@@ -28,7 +28,7 @@ Enforcement and instrumentation live **behind Fastify**, in `AgentService`,
 
 The local Docker/Podman container is still not a hardened multi-tenant
 boundary. Residual risk: a novel prompt may bypass the pattern denylist;
-unknown Codex item shapes are recorded as generic `runtime.event` spans
+unknown Codex *item* types are recorded as `runtime.{itemType}` spans, and unknown *event* types as `runtime.event`
 (with event `keys`, never the raw line). Command spans with a non-zero
 `exit_code` are `error` so **Open failing step** can land on a failed tool.
 
@@ -55,7 +55,10 @@ the `{operation} {name}` form the spec asks for, kept low-cardinality.
 | Live command gate | `policy` | `policy.live` | *(custom)* |
 | Runner spawn | `runtime` | `runtime.spawn` | *(custom)* |
 | Codex `thread.started` | `runtime` | `runtime.thread` | *(custom)* |
-| Codex `turn.completed` | `llm` | `chat {model}` | `chat` |
+| Codex `turn.started` … `turn.completed` | `llm` | `chat {model}` | `chat` |
+| Codex `turn.failed` | `llm` | `chat {model}` (status `error`) | `chat` |
+| Codex `error` event | `runtime` | `runtime.error` | *(custom)* |
+| Unrecognized event type, or an unparsable line | `runtime` | `runtime.event` | *(custom)* |
 | Codex `command_execution` | `tool` | `execute_tool shell` | `execute_tool` |
 | Codex `file_change` | `sandbox` | `execute_tool apply_patch` | `execute_tool` |
 | Codex `agent_message` / `reasoning` | `llm` | `chat {itemType}` | `chat` |
@@ -63,6 +66,16 @@ the `{operation} {name}` form the spec asks for, kept low-cardinality.
 
 `policy`, `runtime` and `sandbox` have no well-known equivalent in the spec,
 which explicitly permits custom values rather than forcing a bad fit.
+
+The `chat` span opens on `turn.started` and closes on `turn.completed`, so model
+time has real width in the waterfall; when a runtime never sends `turn.started`
+the span is created at completion and is therefore zero-length.
+
+The USD figure appears only when `COST_INPUT_USD_PER_MTOK` and
+`COST_OUTPUT_USD_PER_MTOK` are configured for the model actually in use. There
+is no default rate: pricing every model at one provider's list price produced a
+confident number that was wrong, and made a model switch invisible in the
+two-Run compare.
 
 Token counts are written as `gen_ai.usage.input_tokens` /
 `gen_ai.usage.output_tokens`. **Caveat we do not paper over:** OTel expects

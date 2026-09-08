@@ -24,6 +24,11 @@ const envSchema = z.object({
     .enum(["true", "false"])
     .default("true")
     .transform((value) => value === "true"),
+  // Price of the model actually configured, per million tokens. Unset means the
+  // UI shows token counts without a dollar figure — see cost.ts for why there
+  // is no default.
+  COST_INPUT_USD_PER_MTOK: z.coerce.number().nonnegative().optional(),
+  COST_OUTPUT_USD_PER_MTOK: z.coerce.number().nonnegative().optional(),
   CODEX_TIMEOUT_MS: z.coerce.number().int().min(1_000).default(600_000),
   CODEX_MAX_OUTPUT_BYTES: z.coerce.number().int().min(65_536).default(2_097_152),
   RUNTIME_PROVIDER: z.enum(["local-process", "container"]).default("local-process"),
@@ -89,6 +94,14 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
     codexHome: path.resolve(env.CODEX_HOME),
     codexBin: env.CODEX_BIN,
     codexSandboxMode: env.CODEX_SANDBOX_MODE,
+    costRates:
+      env.COST_INPUT_USD_PER_MTOK !== undefined &&
+      env.COST_OUTPUT_USD_PER_MTOK !== undefined
+        ? {
+            inputUsdPerMillion: env.COST_INPUT_USD_PER_MTOK,
+            outputUsdPerMillion: env.COST_OUTPUT_USD_PER_MTOK,
+          }
+        : null,
     traceCaptureContent: env.TRACE_CAPTURE_CONTENT,
     codexTimeoutMs: env.CODEX_TIMEOUT_MS,
     codexMaxOutputBytes: env.CODEX_MAX_OUTPUT_BYTES,

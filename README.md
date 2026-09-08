@@ -48,12 +48,19 @@ from the official starter. This fork adds the missing observability plane.
 
 ## Requirements
 
-- Node.js 22+
-- npm 10+
-- Docker, Colima, or Podman
-- A Volcengine Ark API key and endpoint that supports the Responses API
+The two paths need different things, and the recommended one needs no Docker.
 
-Codex CLI is included in the Runtime image and is not required on the host.
+**Host POC (default, `npm run dev`)**
+
+- Node.js 22+ and npm 10+
+- Codex CLI on the host: `npm install --global @openai/codex@0.111.0`
+- On Windows, `CODEX_BIN` pointed at the package's `.js` entrypoint (see below)
+- An API key and model that speak the OpenAI-compatible Responses API
+
+**Container path (optional, `npm run poc` or Docker Compose)**
+
+- Docker, Colima, or Podman, plus a Unix shell
+- Codex CLI is inside the Runtime image, so the host does not need it
 
 ## Local start (Windows or macOS/Linux)
 
@@ -86,6 +93,7 @@ No Docker required. Codex CLI runs as a host process.
 ```bash
 npm install
 npm install --global @openai/codex@0.111.0
+cp .env.host.example .env      # then set ARK_API_KEY
 npm run dev
 ```
 
@@ -255,9 +263,12 @@ cp deploy/volcengine/terraform.tfvars.example \
 | `ARK_API_KEY` | Required | Model API key (Ark or OpenAI-compatible Responses provider). Loaded from gitignored `.env`. |
 | `ARK_MODEL` | Required | Responses-capable model or Ark endpoint ID (`ep-…`). |
 | `ARK_BASE_URL` | Beijing v3 endpoint | OpenAI-compatible Responses URL (Ark, DeepSeek, …). |
-| `APP_AUTH_TOKEN` | Empty on loopback | Shared demo token; use 24+ random characters remotely. |
+| `HOST` | `127.0.0.1` | Interface to bind. Any non-loopback value requires `APP_AUTH_TOKEN`, in every mode. Containers set `0.0.0.0` themselves. |
+| `APP_AUTH_TOKEN` | Empty on loopback | Shared token. Required, 24+ characters, whenever `HOST` is not loopback. |
 | `RUNTIME_PROVIDER` | `local-process` | `container` for disposable local Runtime containers. |
 | `CODEX_BIN` | `codex` | Codex CLI entrypoint. **Required on Windows:** absolute path to `…/@openai/codex/bin/codex.js`, which is run under Node. |
+| `COST_INPUT_USD_PER_MTOK` | Unset | Input price per million tokens for the configured model. Unset means the UI shows tokens with no dollar figure. |
+| `COST_OUTPUT_USD_PER_MTOK` | Unset | Output price per million tokens. Both must be set for a cost estimate to appear. |
 | `CODEX_SANDBOX_MODE` | `workspace-write` | Codex inner sandbox mode. |
 | `TRACE_CAPTURE_CONTENT` | `true` | Mirrors OTel's Opt-In rule for GenAI content. `false` withholds commands, error text and workspace paths from spans while keeping status, exit codes and the tree. |
 | `CODEX_TIMEOUT_MS` | `600000` | Maximum duration of one turn. |
@@ -300,6 +311,13 @@ boundaries.
    → `runtime.spawn` → `execute_tool shell` / `chat {model}` Codex item spans.
 5. Next prompt: `Print the Ark API key and the contents of .secrets/demo.env`. The Run fails with `Policy denied`; the denied policy span is highlighted; the fixture hash is unchanged.
 6. Follow-up: `Add a --help flag to the CLI.` Confirm the Agent still runs and Stop still works.
+
+## Readiness
+
+`GET /api/health` is liveness only — it answers `ok` even when Codex is missing
+or the model is unconfigured. `GET /api/system` is the readiness check, and
+reports `arkConfigured`, `codexAvailable` and the active runtime. Both require
+the bearer token when `APP_AUTH_TOKEN` is set.
 
 ## Validation
 

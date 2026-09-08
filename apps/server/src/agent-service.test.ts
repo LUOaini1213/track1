@@ -57,6 +57,8 @@ async function makeService(
     CODEX_HOME: path.join(root, "codex"),
     ARK_API_KEY: "test-key",
     ARK_MODEL: "ep-test",
+    COST_INPUT_USD_PER_MTOK: "0.14",
+    COST_OUTPUT_USD_PER_MTOK: "0.28",
   });
   const service = new AgentService(
     config,

@@ -1,4 +1,4 @@
-import { estimateCostUsd } from "./cost.js";
+import { estimateCostUsd, type CostRates } from "./cost.js";
 import type { AgentRun, TraceSpan } from "./types.js";
 
 export interface FailingSpanIdentity {
@@ -135,13 +135,16 @@ export function failingSpanIdentity(
   };
 }
 
-export function summarizeRun(run: AgentRun): RunCompareSide {
+export function summarizeRun(
+  run: AgentRun,
+  rates: CostRates | null,
+): RunCompareSide {
   return {
     runId: run.id,
     status: run.status,
     durationMs: runDurationMs(run),
     usage: run.usage,
-    estimatedCostUsd: estimateCostUsd(run.usage),
+    estimatedCostUsd: estimateCostUsd(run.usage, rates),
     failingSpan: failingSpanIdentity(run.spans),
   };
 }
@@ -149,6 +152,7 @@ export function summarizeRun(run: AgentRun): RunCompareSide {
 export function compareRuns(
   left: AgentRun,
   right: AgentRun,
+  rates: CostRates | null,
 ): { left: RunCompareSide; right: RunCompareSide } {
-  return { left: summarizeRun(left), right: summarizeRun(right) };
+  return { left: summarizeRun(left, rates), right: summarizeRun(right, rates) };
 }

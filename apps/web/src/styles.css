@@ -892,7 +892,9 @@ textarea:focus {
   grid-template-columns: minmax(160px, 40%) minmax(0, 1fr) 56px;
   gap: 8px;
   align-items: center;
-  padding: 0 8px 4px;
+  /* Rows carry a 14px twisty plus a 2px gap before the row button, so the axis
+     needs the same lead-in or its ticks sit left of the bars they label. */
+  padding: 0 8px 4px calc(8px + 16px);
   font-size: 9px;
   color: #9a9a92;
   font-variant-numeric: tabular-nums;
@@ -982,6 +984,18 @@ textarea:focus {
   font-size: 10px;
 }
 
+/* The row and its twisty are siblings now, so the list item is the flex line. */
+.trace-item {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.trace-item .trace-row {
+  flex: 1;
+  min-width: 0;
+}
+
 .trace-label {
   display: flex;
   align-items: center;
@@ -991,10 +1005,26 @@ textarea:focus {
 
 .trace-twisty {
   flex: none;
-  width: 10px;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
   color: #9a9a92;
   font-size: 9px;
   line-height: 1;
+  cursor: pointer;
+}
+
+.trace-twisty:hover {
+  background: #ece9ff;
+  color: #4b3fa8;
+}
+
+.trace-twisty:focus-visible {
+  outline: 2px solid #6b5bd2;
+  outline-offset: 1px;
 }
 
 .trace-twisty-empty {

@@ -7,9 +7,13 @@ hackathon.
 
 ```bash
 npm install
-cp .env.example .env
+cp .env.host.example .env      # then set ARK_API_KEY
 npm run dev
 ```
+
+`.env.example` is the Docker Compose profile: it uses in-image absolute paths
+and binds every interface. Copying it for a host run puts state in the wrong
+place and, since a non-loopback bind requires a real token, refuses to start.
 
 For container-based Agent execution, follow
 [docs/LOCAL_POC.md](docs/LOCAL_POC.md).

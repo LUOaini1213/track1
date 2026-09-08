@@ -367,7 +367,7 @@ function TracePanel({
           </button>
         </div>
       </div>
-      <div className="trace-filters" role="tablist" aria-label="Span filter">
+      <div className="trace-filters" role="group" aria-label="Span filter">
         {(
           ["all", "problems", "llm", "tool", "policy", "sandbox"] as TraceFilter[]
         ).map(
@@ -376,6 +376,7 @@ function TracePanel({
               key={item}
               type="button"
               className={"trace-filter" + (filter === item ? " selected" : "")}
+              aria-pressed={filter === item}
               onClick={() => setFilter(item)}
             >
               {item}
@@ -408,7 +409,31 @@ function TracePanel({
           const geometry = layout.get(span.spanId);
           const collapsed = collapsedIds.has(span.spanId);
           return (
-            <li key={span.spanId}>
+            <li key={span.spanId} className="trace-item">
+              {/* The twisty used to be a role="button" with tabIndex={-1}
+                  nested inside the row button. Interactive elements cannot
+                  nest, and that combination made collapse reachable only by
+                  mouse: keyboard users tabbed to the row, pressed Enter, and
+                  merely selected the span. It is now a sibling button. */}
+              {geometry?.hasChildren ? (
+                <button
+                  type="button"
+                  className="trace-twisty"
+                  aria-label={
+                    (collapsed ? "Expand " : "Collapse ") + span.name
+                  }
+                  aria-expanded={!collapsed}
+                  style={{ marginLeft: (geometry?.depth ?? 0) * 12 }}
+                  onClick={() => toggleCollapsed(span.spanId)}
+                >
+                  {collapsed ? "▸" : "▾"}
+                </button>
+              ) : (
+                <span
+                  className="trace-twisty trace-twisty-empty"
+                  style={{ marginLeft: (geometry?.depth ?? 0) * 12 }}
+                />
+              )}
               <button
                 type="button"
                 ref={
@@ -421,26 +446,7 @@ function TracePanel({
                 }
                 onClick={() => onSelect(span.spanId)}
               >
-                <span
-                  className="trace-label"
-                  style={{ paddingLeft: (geometry?.depth ?? 0) * 12 }}
-                >
-                  {geometry?.hasChildren ? (
-                    <span
-                      className="trace-twisty"
-                      role="button"
-                      tabIndex={-1}
-                      aria-label={collapsed ? "Expand" : "Collapse"}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        toggleCollapsed(span.spanId);
-                      }}
-                    >
-                      {collapsed ? "▸" : "▾"}
-                    </span>
-                  ) : (
-                    <span className="trace-twisty trace-twisty-empty" />
-                  )}
+                <span className="trace-label">
                   <span className={"trace-kind trace-kind-" + span.kind}>
                     {span.kind}
                   </span>

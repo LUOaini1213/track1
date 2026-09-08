@@ -292,7 +292,7 @@ export class AgentService {
       traceId: run.traceId,
       spans: run.spans,
       usage: run.usage,
-      estimatedCostUsd: estimateCostUsd(run.usage),
+      estimatedCostUsd: estimateCostUsd(run.usage, this.config.costRates),
     };
   }
 
@@ -333,7 +333,7 @@ export class AgentService {
     if (!left || !right) {
       throw new HttpError(404, "Need two Runs on this Agent to compare");
     }
-    const compared = compareRuns(left, right);
+    const compared = compareRuns(left, right, this.config.costRates);
     return { agentId, ...compared };
   }
 
