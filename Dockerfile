@@ -41,6 +41,13 @@ RUN mkdir -p /app/data /app/workspaces /app/codex-home \
     && chown -R node:node /app
 
 USER node
+# The server defaults to 127.0.0.1 so a bare `npm run dev` cannot publish an
+# unauthenticated control plane to the network. Inside a container that default
+# would make the published port unreachable, so ask for every interface here —
+# the container boundary is the thing being published, and APP_AUTH_TOKEN is
+# still required for a non-loopback bind.
+ENV HOST=0.0.0.0
+
 EXPOSE 3000
 HEALTHCHECK --interval=20s --timeout=5s --start-period=15s --retries=5 \
   CMD node -e "fetch('http://127.0.0.1:3000/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"

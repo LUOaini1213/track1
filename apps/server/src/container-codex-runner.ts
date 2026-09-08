@@ -1,7 +1,11 @@
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
 import type { AppConfig } from "./config.js";
-import { buildCodexArgs, parseCodexEventLine } from "./codex-runner.js";
+import {
+  buildCodexArgs,
+  codexExitDetail,
+  parseCodexEventLine,
+} from "./codex-runner.js";
 import { PolicyDeniedError, RunCancelledError } from "./errors.js";
 import type {
   AgentRunner,
@@ -176,17 +180,21 @@ export class ContainerCodexRunner implements AgentRunner {
     let stderr = "";
     let totalBytes = 0;
     let policyError: PolicyDeniedError | null = null;
+    let sinkError: unknown = null;
 
+    // Same reasoning as CodexRunner.sink: this runs inside a stdout "data"
+    // handler, so a rethrow becomes an uncaught exception and takes the server
+    // down instead of failing one Run.
     const sink = (event: Record<string, unknown>) => {
       try {
         request.onCodexEvent?.(event);
       } catch (error) {
         if (error instanceof PolicyDeniedError) {
           policyError = error;
-          void this.removeContainer(active);
-          return;
+        } else if (!sinkError) {
+          sinkError = error;
         }
-        throw error;
+        void this.removeContainer(active);
       }
     };
 
@@ -224,6 +232,7 @@ export class ContainerCodexRunner implements AgentRunner {
       });
       if (stdout.trim()) parseCodexEventLine(stdout.trim(), parsed, sink);
       if (policyError) throw policyError;
+      if (sinkError) throw sinkError;
       if (active.cancelled) throw new RunCancelledError();
       if (active.timedOut) {
         throw new Error("Runtime timed out after " + this.config.codexTimeoutMs + " ms");
@@ -232,7 +241,7 @@ export class ContainerCodexRunner implements AgentRunner {
         throw new Error("Codex output exceeded CODEX_MAX_OUTPUT_BYTES");
       }
       if (exitCode !== 0) {
-        const detail = parsed.errors.at(-1) ?? stderr.trim() ?? "No error detail";
+        const detail = codexExitDetail(parsed, stderr);
         throw new Error(
           this.config.containerEngine +
             " Runtime exited with code " +
@@ -242,7 +251,13 @@ export class ContainerCodexRunner implements AgentRunner {
         );
       }
       const output = parsed.messages.at(-1)?.trim();
-      if (!output) throw new Error("Codex completed without an agent message");
+      if (!output) {
+        const detail = parsed.errors.at(-1) || stderr.trim();
+        throw new Error(
+          "Codex completed without an agent message" +
+            (detail ? ": " + detail : ""),
+        );
+      }
       return { output, threadId: parsed.threadId, usage: parsed.usage };
     } finally {
       clearTimeout(timeout);

@@ -103,6 +103,51 @@ describe("HTTP boundary", () => {
     await app.close();
   });
 
+  it("keeps its own error shape in production, where the app actually runs", async () => {
+    // Docker, compose and both ECS paths run NODE_ENV=production, and there the
+    // error handler used to be installed after `await register(fastifyStatic)`,
+    // which meant it never governed the routes: hand-written messages came back
+    // in Fastify's {statusCode, error, message} envelope — the web client reads
+    // `body.error`, so it displayed "Conflict" — and Zod failures answered 500.
+    const failing = {
+      listAgents: () => {
+        throw new HttpError(409, "Stop the active run before editing this Agent");
+      },
+      systemInfo: async () => ({}),
+      getTrace: () => {
+        throw new HttpError(404, "Run not found");
+      },
+    } as unknown as AgentService;
+
+    for (const nodeEnv of ["test", "production"] as const) {
+      const app = await createApp(
+        loadConfig({ NODE_ENV: nodeEnv, LOG_LEVEL: "silent" }),
+        failing,
+      );
+      const conflict = await app.inject({ method: "GET", url: "/api/agents" });
+      expect(conflict.statusCode, nodeEnv).toBe(409);
+      expect(conflict.json(), nodeEnv).toEqual({
+        error: "Stop the active run before editing this Agent",
+      });
+
+      const invalid = await app.inject({
+        method: "POST",
+        url: "/api/agents",
+        payload: { name: "" },
+      });
+      expect(invalid.statusCode, nodeEnv).toBe(400);
+      expect(invalid.json().details, nodeEnv).toBeDefined();
+
+      const missing = await app.inject({
+        method: "GET",
+        url: "/api/runs/00000000-0000-4000-8000-000000000099/trace",
+      });
+      expect(missing.statusCode, nodeEnv).toBe(404);
+      expect(missing.json(), nodeEnv).toEqual({ error: "Run not found" });
+      await app.close();
+    }
+  }, 20_000);
+
   it("exposes a run trace endpoint", async () => {
     const app = await createApp(
       loadConfig({ NODE_ENV: "test", LOG_LEVEL: "silent" }),

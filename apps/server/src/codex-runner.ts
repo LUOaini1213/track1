@@ -103,6 +103,21 @@ export function parseCodexEventLine(
   }
 }
 
+/**
+ * The reason a Codex process failed, in priority order.
+ *
+ * Uses `||`, not `??`: String.trim() returns "" rather than nullish, so a `??`
+ * chain can never reach the final fallback and an empty stderr produced a
+ * dangling "exited with code 1: ". Shared so the container runner cannot drift
+ * away from this again — it did once already.
+ */
+export function codexExitDetail(
+  parsed: { errors: string[] },
+  stderr: string,
+): string {
+  return parsed.errors.at(-1) || stderr.trim() || "No error detail";
+}
+
 export class CodexRunner implements AgentRunner {
   private readonly active = new Map<
     string,
@@ -182,17 +197,23 @@ export class CodexRunner implements AgentRunner {
     let stderr = "";
     let totalBytes = 0;
     let policyError: PolicyDeniedError | null = null;
+    let sinkError: unknown = null;
 
+    // `sink` runs inside a stdout "data" handler, where nothing above it can
+    // catch. Rethrowing turned any bug in the event pipeline — recordCodexEvent,
+    // commandFromCodexEvent, the policy gate — into an uncaught exception that
+    // killed the whole server and every other Agent's Run. Capture it, stop this
+    // child, and let the caller fail this Run alone.
     const sink = (event: Record<string, unknown>) => {
       try {
         request.onCodexEvent?.(event);
       } catch (error) {
         if (error instanceof PolicyDeniedError) {
           policyError = error;
-          this.terminate(active);
-          return;
+        } else if (!sinkError) {
+          sinkError = error;
         }
-        throw error;
+        this.terminate(active);
       }
     };
 
@@ -238,6 +259,9 @@ export class CodexRunner implements AgentRunner {
       if (policyError) {
         throw policyError;
       }
+      if (sinkError) {
+        throw sinkError;
+      }
       if (active.cancelled) {
         throw new RunCancelledError();
       }
@@ -248,14 +272,22 @@ export class CodexRunner implements AgentRunner {
         throw new Error("Codex output exceeded CODEX_MAX_OUTPUT_BYTES");
       }
       if (exitCode !== 0) {
-        // `??` never reached the last branch: String.trim() returns "", not nullish,
-        // so an empty stderr produced a dangling "Codex exited with code 1: ".
-        const detail = parsed.errors.at(-1) || stderr.trim() || "No error detail";
-        throw new Error("Codex exited with code " + exitCode + ": " + detail);
+        throw new Error(
+          "Codex exited with code " +
+            exitCode +
+            ": " +
+            codexExitDetail(parsed, stderr),
+        );
       }
       const output = parsed.messages.at(-1)?.trim();
       if (!output) {
-        throw new Error("Codex completed without an agent message");
+        // Codex can report a fatal error and still exit 0 (a 401, say). Without
+        // the detail the operator was told only that no message arrived.
+        const detail = parsed.errors.at(-1) || stderr.trim();
+        throw new Error(
+          "Codex completed without an agent message" +
+            (detail ? ": " + detail : ""),
+        );
       }
       return {
         output,

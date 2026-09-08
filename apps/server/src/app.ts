@@ -153,20 +153,12 @@ export async function createApp(
     return service.getTrace(id);
   });
 
-  if (config.nodeEnv === "production") {
-    const webRoot = fileURLToPath(new URL("../../web/dist", import.meta.url));
-    await app.register(fastifyStatic, {
-      root: webRoot,
-      prefix: "/",
-    });
-    app.setNotFoundHandler((request, reply) => {
-      if (request.url.startsWith("/api/")) {
-        return reply.code(404).send({ error: "API route not found" });
-      }
-      return reply.sendFile("index.html");
-    });
-  }
-
+  // Registered BEFORE the static plugin. `await app.register(fastifyStatic)`
+  // boots that plugin into its own context; a setErrorHandler installed after it
+  // does not govern the routes, so in production every message below degraded to
+  // Fastify's default {statusCode, error, message} envelope — which the web
+  // client, reading `body.error`, rendered as "Conflict" — and a Zod validation
+  // failure answered 500 instead of 400.
   app.setErrorHandler((error, request, reply) => {
     const appError = error instanceof Error ? error : new Error(String(error));
     const validationError = error instanceof z.ZodError;
@@ -190,6 +182,20 @@ export async function createApp(
       ...(validationError ? { details: error.issues } : {}),
     });
   });
+
+  if (config.nodeEnv === "production") {
+    const webRoot = fileURLToPath(new URL("../../web/dist", import.meta.url));
+    await app.register(fastifyStatic, {
+      root: webRoot,
+      prefix: "/",
+    });
+    app.setNotFoundHandler((request, reply) => {
+      if (request.raw.url?.split("?")[0]?.startsWith("/api/")) {
+        return reply.code(404).send({ error: "API route not found" });
+      }
+      return reply.sendFile("index.html");
+    });
+  }
 
   return app;
 }
