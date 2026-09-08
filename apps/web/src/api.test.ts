@@ -42,33 +42,34 @@ describe("api client", () => {
   });
 
   it("sends the bearer token once set, and stops when cleared", async () => {
-    const fetchMock = vi.fn(async () => respond(200, { agents: [] }));
+    const fetchMock = vi.fn<(url: string, init?: RequestInit) => Promise<Response>>(
+      async () => respond(200, { agents: [] }),
+    );
     vi.stubGlobal("fetch", fetchMock);
+    const headersOf = (index: number) =>
+      (fetchMock.mock.calls[index]?.[1]?.headers ?? {}) as Record<string, string>;
 
     await api.listAgents();
-    expect(
-      (fetchMock.mock.calls[0]?.[1] as RequestInit | undefined)?.headers,
-    ).not.toHaveProperty("Authorization");
+    expect(headersOf(0)).not.toHaveProperty("Authorization");
 
     setAuthToken("  a-token-with-padding  ");
     await api.listAgents();
-    const headers = (fetchMock.mock.calls[1]?.[1] as RequestInit).headers as Record<string, string>;
     // Trimmed: a pasted token usually arrives with whitespace.
-    expect(headers.Authorization).toBe("Bearer a-token-with-padding");
+    expect(headersOf(1).Authorization).toBe("Bearer a-token-with-padding");
 
     setAuthToken("");
     await api.listAgents();
-    expect(
-      (fetchMock.mock.calls[2]?.[1] as RequestInit).headers,
-    ).not.toHaveProperty("Authorization");
+    expect(headersOf(2)).not.toHaveProperty("Authorization");
   });
 
   it("declares JSON only when it is actually sending a body", async () => {
-    const fetchMock = vi.fn(async () => respond(200, {}));
+    const fetchMock = vi.fn<(url: string, init?: RequestInit) => Promise<Response>>(
+      async () => respond(200, {}),
+    );
     vi.stubGlobal("fetch", fetchMock);
     await api.listAgents();
     expect(
-      (fetchMock.mock.calls[0]?.[1] as RequestInit).headers,
+      (fetchMock.mock.calls[0]?.[1]?.headers ?? {}) as Record<string, string>,
     ).not.toHaveProperty("Content-Type");
   });
 });
