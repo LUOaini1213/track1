@@ -203,4 +203,154 @@ describe("TraceCollector", () => {
       "stream disconnected before completion",
     );
   });
+
+  it("gives the model turn real duration instead of a zero-width span", async () => {
+    // The chat span used to be created and ended inside the turn.completed
+    // handler, so it was structurally 0 ms. In the stored traces that left
+    // 7.6-26.6 s of wall time per Run with no span carrying it — the slowest
+    // component had no bar in the waterfall.
+    const collector = new TraceCollector("run-1", "agent-1", {
+      modelName: "ep-test",
+    });
+    const parent = collector.startSpan("runtime.spawn", "runtime", null);
+    collector.recordCodexEvent(parent, { type: "turn.started" });
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    collector.recordCodexEvent(parent, {
+      type: "turn.completed",
+      usage: { input_tokens: 900, output_tokens: 120 },
+    });
+    const turns = collector.snapshot().filter((span) => span.kind === "llm");
+    expect(turns).toHaveLength(1);
+    expect(turns[0]?.name).toBe("chat ep-test");
+    expect(turns[0]?.durationMs).toBeGreaterThanOrEqual(10);
+    expect(turns[0]?.attributes["gen_ai.usage.input_tokens"]).toBe(900);
+    // turn.started must not also leave a generic runtime.event behind.
+    expect(
+      collector.snapshot().filter((span) => span.name === "runtime.event"),
+    ).toHaveLength(0);
+  });
+
+  it("still records usage when the runtime never sends turn.started", () => {
+    const collector = new TraceCollector("run-1", "agent-1", {
+      modelName: "ep-test",
+    });
+    const parent = collector.startSpan("runtime.spawn", "runtime", null);
+    collector.recordCodexEvent(parent, {
+      type: "turn.completed",
+      usage: { input_tokens: 5, output_tokens: 2 },
+    });
+    const turn = collector.snapshot().find((span) => span.kind === "llm");
+    expect(turn?.attributes["gen_ai.usage.input_tokens"]).toBe(5);
+    expect(turn?.status).toBe("ok");
+  });
+
+  it("records turn.failed as an error carrying the provider's reason", () => {
+    // This fell through to a green runtime.event and the message was dropped,
+    // so the Run reported only "Codex exited with code 1: No error detail".
+    const collector = new TraceCollector("run-1", "agent-1", {
+      modelName: "ep-test",
+    });
+    const parent = collector.startSpan("runtime.spawn", "runtime", null);
+    collector.recordCodexEvent(parent, { type: "turn.started" });
+    collector.recordCodexEvent(parent, {
+      type: "turn.failed",
+      error: { message: "Request failed with status 429: rate limit exceeded" },
+    });
+    const turn = collector.snapshot().find((span) => span.kind === "llm");
+    expect(turn?.status).toBe("error");
+    expect(turn?.attributes.errorText).toContain("429");
+    expect(turn?.attributes.failedStep).toContain("rate limit");
+  });
+
+  it("closes spans the runtime left open, instead of storing them as running", () => {
+    const collector = new TraceCollector("run-1", "agent-1");
+    const parent = collector.startSpan("runtime.spawn", "runtime", null);
+    collector.recordCodexEvent(parent, {
+      type: "item.started",
+      item: { id: "c1", type: "command_execution", command: "npm install" },
+    });
+    const open = collector.snapshot().find((s) => s.name === "execute_tool shell");
+    expect(open?.endedAt).toBeNull();
+
+    collector.endOpenSpans("denied", { errorText: "stopped mid-command" });
+    const closed = collector.snapshot().find((s) => s.name === "execute_tool shell");
+    expect(closed?.status).toBe("denied");
+    expect(closed?.endedAt).not.toBeNull();
+    expect(closed?.durationMs).not.toBeNull();
+    expect(closed?.attributes.unterminated).toBe(true);
+    // The root wrapper is closed too, children first.
+    expect(collector.snapshot().every((s) => s.endedAt !== null)).toBe(true);
+  });
+
+  it("labels a failing step only when the step failed", () => {
+    const collector = new TraceCollector("run-1", "agent-1");
+    const parent = collector.startSpan("runtime.spawn", "runtime", null);
+    collector.recordCodexEvent(parent, {
+      type: "item.completed",
+      item: { id: "c1", type: "command_execution", command: "npm test", exit_code: 0 },
+    });
+    collector.recordCodexEvent(parent, {
+      type: "item.completed",
+      item: { id: "a1", type: "agent_message", text: "Here is what I did." },
+    });
+    const spans = collector.snapshot();
+    const ok = spans.find((s) => s.attributes.command === "npm test");
+    const message = spans.find((s) => s.name === "chat agent_message");
+    // "failing step: npm test" next to a command that exited 0.
+    expect(ok?.failedStep).toBeUndefined();
+    expect(ok?.attributes.failedStep).toBeNull();
+    expect(message?.attributes.failedStep).toBeNull();
+    // Assistant prose is text, not a command the span claims to have run.
+    expect(message?.attributes.command).toBeNull();
+    expect(message?.attributes.text).toBe("Here is what I did.");
+  });
+
+  it("keeps the end of captured output, where a command says why it failed", () => {
+    const collector = new TraceCollector("run-1", "agent-1");
+    const parent = collector.startSpan("runtime.spawn", "runtime", null);
+    const passing = Array.from(
+      { length: 40 },
+      (_, i) => " ok src/module" + i + ".test.ts (4 tests) 10ms",
+    ).join("\n");
+    collector.recordCodexEvent(parent, {
+      type: "item.completed",
+      item: {
+        id: "c1",
+        type: "command_execution",
+        command: "npm test",
+        exit_code: 1,
+        aggregated_output: [
+          "> vitest run",
+          passing,
+          "AssertionError: expected 3 to be 4",
+        ].join("\n"),
+      },
+    });
+    const span = collector.snapshot().find((s) => s.name === "execute_tool shell");
+    // The head is the banner and forty passing files; the reason is at the tail.
+    expect(span?.attributes.errorText).toContain("AssertionError");
+    expect(span?.attributes.errorText).not.toContain("vitest run");
+  });
+
+  it("records which files a patch touched", () => {
+    const collector = new TraceCollector("run-1", "agent-1");
+    const parent = collector.startSpan("runtime.spawn", "runtime", null);
+    collector.recordCodexEvent(parent, {
+      type: "item.completed",
+      item: {
+        id: "f1",
+        type: "file_change",
+        changes: [
+          { kind: "add", path: "src/cli.ts" },
+          { kind: "modify", path: "package.json" },
+        ],
+      },
+    });
+    const span = collector
+      .snapshot()
+      .find((s) => s.name === "execute_tool apply_patch");
+    expect(span?.attributes.fileCount).toBe(2);
+    expect(span?.attributes.files).toContain("src/cli.ts");
+    expect(span?.attributes.files).toContain("package.json");
+  });
 });

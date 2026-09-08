@@ -92,6 +92,19 @@ export function parseCodexEventLine(
     };
   }
 
+  // A failed turn carries its reason under `error`; without this the exit-code
+  // path had nothing to report and said "No error detail".
+  if (event.type === "turn.failed") {
+    const failure = (event as { error?: unknown }).error;
+    const message =
+      typeof failure === "string"
+        ? failure
+        : typeof (failure as { message?: unknown })?.message === "string"
+          ? ((failure as { message: string }).message)
+          : "Codex turn failed";
+    parsed.errors.push(message);
+  }
+
   if (event.type === "error") {
     const message =
       typeof event.message === "string"

@@ -443,6 +443,12 @@ export class AgentService {
             }
           },
         });
+        // Codex opened these on item.started and never sent item.completed.
+        // They are not successes; leaving them open stored a finished Run whose
+        // trace claimed a step was still running.
+        collector.endOpenSpans("error", {
+          errorText: "Codex never reported this step as completed",
+        });
         collector.endSpan(runtimeSpanId, "ok");
         collector.endSpan(rootSpanId, "ok");
         const completedAt = now();
@@ -478,6 +484,12 @@ export class AgentService {
             : error instanceof RunCancelledError
               ? "cancelled"
               : "error";
+        collector.endOpenSpans(runtimeStatus, {
+          errorText:
+            runtimeStatus === "denied"
+              ? "Terminated by the policy gate before this step completed"
+              : "Run ended before this step completed",
+        });
         collector.endSpan(runtimeSpanId, runtimeStatus);
         throw error;
       }
@@ -487,6 +499,9 @@ export class AgentService {
       const denied = error instanceof PolicyDeniedError;
       const message = error instanceof Error ? error.message : String(error);
       const rootStatus = cancelled ? "cancelled" : denied ? "denied" : "error";
+      collector.endOpenSpans(rootStatus, {
+        errorText: "Run ended before this step completed",
+      });
       if (
         collector.spans.some(
           (span) => span.spanId === rootSpanId && span.endedAt === null,

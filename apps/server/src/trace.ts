@@ -66,6 +66,7 @@ export class TraceCollector {
   readonly traceId: string;
   readonly spans: TraceSpan[] = [];
   private readonly itemSpans = new Map<string, string>();
+  private turnSpanId: string | null = null;
   private readonly onChange:
     | ((spans: TraceSpan[]) => void | Promise<void>)
     | undefined;
@@ -184,6 +185,45 @@ export class TraceCollector {
     this.schedulePersist();
   }
 
+  /**
+   * Close every span the runtime left open. Codex opens a span on item.started
+   * and closes it on item.completed, so a Run that is denied, cancelled or dies
+   * mid-command left that span at status "ok" with endedAt null — stored that
+   * way forever, rendered as a still-running "…" in a finished Run, and in the
+   * deny case the denied command was the one green span in the trace.
+   *
+   * Walks in reverse so children close before their parents.
+   */
+  endOpenSpans(status: SpanStatus, attributes: TraceSpan["attributes"] = {}): void {
+    for (let index = this.spans.length - 1; index >= 0; index -= 1) {
+      const span = this.spans[index];
+      if (span && span.endedAt === null) {
+        this.endSpan(span.spanId, status, { ...attributes, unterminated: true });
+      }
+    }
+  }
+
+  private chatSpanName(): string {
+    return this.modelName ? "chat " + this.modelName : "chat";
+  }
+
+  /**
+   * End the turn span opened by turn.started, or synthesise one when the
+   * runtime never sent turn.started (older Codex builds, or a stream that began
+   * mid-turn) so usage is still recorded.
+   */
+  private closeTurnSpan(
+    status: SpanStatus,
+    attributes: TraceSpan["attributes"],
+    parentSpanId: string,
+  ): void {
+    const spanId =
+      this.turnSpanId ??
+      this.startSpan(this.chatSpanName(), "llm", parentSpanId, attributes);
+    this.turnSpanId = null;
+    this.endSpan(spanId, status, attributes);
+  }
+
   recordCodexEvent(parentSpanId: string, event: Record<string, unknown>): void {
     const type = typeof event.type === "string" ? event.type : "unknown";
     if (type === "thread.started") {
@@ -226,34 +266,65 @@ export class TraceCollector {
       return;
     }
 
+    // A turn is the model's own work: it opens before the first item and closes
+    // when the model is done. Creating the span only on turn.completed made
+    // every `chat` span 0 ms, so the component that consumed almost all the wall
+    // time — 7.6-26.6 s per Run in the stored traces — had no width in the
+    // waterfall and a reader could not tell a model stall from a slow tool.
+    //
+    // Items stay parented to runtime.spawn rather than to this span. Nesting
+    // them here would be more faithful, but it changes depth for every existing
+    // consumer, and the turn span already covers their wall time.
+    if (type === "turn.started") {
+      this.turnSpanId = this.startSpan(this.chatSpanName(), "llm", parentSpanId, {
+        "gen_ai.operation.name": "chat",
+        "gen_ai.request.model": this.modelName,
+      });
+      return;
+    }
+
     if (type === "turn.completed") {
       const usage =
         event.usage && typeof event.usage === "object"
           ? (event.usage as Record<string, unknown>)
           : {};
-      const spanId = this.startSpan(
-        this.modelName ? "chat " + this.modelName : "chat",
-        "llm",
-        parentSpanId,
+      const usageAttributes: TraceSpan["attributes"] = {
+        "gen_ai.operation.name": "chat",
+        "gen_ai.request.model": this.modelName,
+        "gen_ai.usage.input_tokens":
+          typeof usage.input_tokens === "number" ? usage.input_tokens : null,
+        "gen_ai.usage.output_tokens":
+          typeof usage.output_tokens === "number" ? usage.output_tokens : null,
+        "gen_ai.usage.cache_read.input_tokens":
+          typeof usage.cached_input_tokens === "number"
+            ? usage.cached_input_tokens
+            : null,
+        // Provenance, not a conformance claim: these are the counts Codex
+        // reports on turn.completed. OTel expects gen_ai.usage.input_tokens
+        // to be the billed, cache-inclusive count; we do not know that the
+        // Codex number is either, so the USD figure stays labelled "est.".
+        "gen_ai.usage.source": "codex turn.completed",
+      };
+      this.closeTurnSpan("ok", usageAttributes, parentSpanId);
+      return;
+    }
+
+    // Codex reports a failed turn — a 429, a context overflow — with the reason
+    // under `error`. With no branch for it this fell through to the generic
+    // green runtime.event span and the message was dropped, leaving the Run to
+    // report only "Codex exited with code 1: No error detail".
+    if (type === "turn.failed") {
+      const message = errorMessageOf(event.error) ?? "Codex turn failed";
+      this.closeTurnSpan(
+        "error",
         {
           "gen_ai.operation.name": "chat",
           "gen_ai.request.model": this.modelName,
-          "gen_ai.usage.input_tokens":
-            typeof usage.input_tokens === "number" ? usage.input_tokens : null,
-          "gen_ai.usage.output_tokens":
-            typeof usage.output_tokens === "number" ? usage.output_tokens : null,
-          "gen_ai.usage.cache_read.input_tokens":
-            typeof usage.cached_input_tokens === "number"
-              ? usage.cached_input_tokens
-              : null,
-          // Provenance, not a conformance claim: these are the counts Codex
-          // reports on turn.completed. OTel expects gen_ai.usage.input_tokens
-          // to be the billed, cache-inclusive count; we do not know that the
-          // Codex number is either, so the USD figure stays labelled "est.".
-          "gen_ai.usage.source": "codex turn.completed",
+          errorText: message,
+          failedStep: message,
         },
+        parentSpanId,
       );
-      this.endSpan(spanId, "ok");
       return;
     }
 
@@ -376,6 +447,20 @@ function retrySourceId(item: Record<string, unknown>): string | null {
   return null;
 }
 
+/** Codex reports turn errors as `{message}` on some events and a bare string on others. */
+function errorMessageOf(value: unknown): string | null {
+  if (typeof value === "string" && value.trim()) {
+    return value.slice(0, 500);
+  }
+  if (value && typeof value === "object") {
+    const message = (value as { message?: unknown }).message;
+    if (typeof message === "string" && message.trim()) {
+      return message.slice(0, 500);
+    }
+  }
+  return null;
+}
+
 function firstString(
   ...values: unknown[]
 ): string | null {
@@ -387,41 +472,64 @@ function firstString(
   return null;
 }
 
+/** Like firstString, but keeps the END — where a failure explains itself. */
+function lastString(...values: unknown[]): string | null {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) {
+      return value.trimEnd().slice(-240);
+    }
+  }
+  return null;
+}
+
 function itemAttributes(
   item: Record<string, unknown>,
 ): TraceSpan["attributes"] {
+  // `command` is the command. Assistant and reasoning text used to fall through
+  // into it, so a chat span claimed to have executed its own prose.
   const command = Array.isArray(item.command)
     ? item.command.map(String).join(" ")
     : typeof item.command === "string"
       ? item.command
-      : typeof item.text === "string"
-        ? item.text.slice(0, 180)
-        : null;
+      : null;
+  const text = typeof item.text === "string" ? item.text : null;
   const failed = itemStatus(item) === "error";
+  // Head-first for fields that are already a message; tail-first for captured
+  // output, where the reason a command failed is at the end. `npm test` failing
+  // after twelve green files used to show the banner and the passing lines.
   const errorText = failed
-    ? firstString(
-        item.message,
-        item.stderr,
-        item.error,
-        item.aggregated_output,
-        item.output,
-      )
+    ? (firstString(item.message, item.stderr, item.error) ??
+      lastString(item.aggregated_output, item.output))
     : null;
+  const changes = Array.isArray(item.changes) ? item.changes : null;
   return {
     itemType: typeof item.type === "string" ? item.type : null,
     command,
-    chars:
-      typeof item.text === "string" ? item.text.length : null,
-    exitCode:
-      typeof item.exit_code === "number" ? item.exit_code : null,
+    text: text ? text.slice(0, 240) : null,
+    chars: text ? text.length : null,
+    exitCode: typeof item.exit_code === "number" ? item.exit_code : null,
+    // A file_change item's only payload is which files it touched.
+    files: changes
+      ? changes
+          .map((change) => {
+            const entry = change as { kind?: unknown; path?: unknown };
+            return [entry.kind, entry.path].filter(Boolean).join(" ");
+          })
+          .filter(Boolean)
+          .join(", ")
+          .slice(0, 240) || null
+      : null,
+    fileCount: changes ? changes.length : null,
+    query: typeof item.query === "string" ? item.query.slice(0, 240) : null,
     errorText,
-    // Never fall back to the bare word "command": an error item has no command,
-    // and "failing step: command" is worse than saying what actually happened.
+    // Only a failure has a failing step. This was set on every span, so the
+    // Playground printed "failing step: npm test" next to a command that exited
+    // 0, and "failing step: <assistant prose>" on green chat spans.
     failedStep: failed
       ? (command ?? errorText ?? String(item.type ?? "step")) +
         (typeof item.exit_code === "number"
           ? " (exit " + String(item.exit_code) + ")"
           : "")
-      : command,
+      : null,
   };
 }
