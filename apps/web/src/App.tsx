@@ -142,11 +142,20 @@ function layoutSpans(spans: TraceSpan[]): Waterfall {
   // trace, and a long-running Agent can produce thousands of spans.
   let base = Infinity;
   let end = -Infinity;
+  let hasOpenSpan = false;
   for (const span of spans) {
     const from = Date.parse(span.startedAt);
     const to = span.endedAt ? Date.parse(span.endedAt) : from;
+    if (!span.endedAt) hasOpenSpan = true;
     if (from < base) base = from;
     if (to > end) end = to;
+  }
+  // An in-flight span has no end yet. Bounding the trace by its start put it at
+  // offset 100% with the minimum width — off the right edge of a track that
+  // clips — so the one row the user is watching showed an empty bar and "…".
+  // Math.max keeps this correct when the server clock runs ahead of ours.
+  if (hasOpenSpan) {
+    end = Math.max(end, Date.now());
   }
   // A trace that starts and ends inside the same millisecond would divide by
   // zero; clamp so every bar still renders at a visible minimum width.
@@ -164,7 +173,7 @@ function layoutSpans(spans: TraceSpan[]): Waterfall {
     const duration = span.durationMs ?? Math.max(0, end - Date.parse(span.startedAt));
     layout.set(span.spanId, {
       depth,
-      offsetPercent: (offset / total) * 100,
+      offsetPercent: Math.min(98.5, (offset / total) * 100),
       widthPercent: Math.max(1.5, (duration / total) * 100),
       hasChildren: parents.has(span.spanId),
     });
@@ -261,14 +270,16 @@ function TracePanel({
     if (filter === "problems") {
       return span.status === "error" || span.status === "denied";
     }
-    if (hiddenByCollapse(span)) {
-      return false;
-    }
     if (filter === "all") {
-      return true;
+      return !hiddenByCollapse(span);
     }
     return span.kind === filter;
   });
+
+  const traceId = spans[0]?.traceId ?? null;
+  useEffect(() => {
+    setCollapsedIds(new Set());
+  }, [traceId]);
 
   // "Open failing step" is the 30-second root-cause affordance: selecting the
   // span is not enough if it is below the fold.
@@ -671,10 +682,33 @@ export default function App() {
     if (pollingRunIds.current.has(runId)) return;
     pollingRunIds.current.add(runId);
     try {
+      let consecutiveFailures = 0;
+      let delay = 900;
       while (mountedRef.current) {
-        await new Promise((resolve) => window.setTimeout(resolve, 900));
+        await new Promise((resolve) => window.setTimeout(resolve, delay));
         if (!mountedRef.current) return;
-        const trace = await api.trace(runId);
+        let trace: Awaited<ReturnType<typeof api.trace>>;
+        try {
+          trace = await api.trace(runId);
+        } catch (reason) {
+          // A dev-server restart, a 5xx or a dropped connection used to escape
+          // this loop for good: activeRun stayed "running", so the spinner never
+          // stopped and the composer stayed disabled until the page reloaded.
+          if (reason instanceof ApiError && [401, 404].includes(reason.status)) {
+            throw reason;
+          }
+          consecutiveFailures += 1;
+          if (consecutiveFailures >= 5) {
+            setError(
+              "Lost contact with the control plane while this run was active.",
+            );
+            return;
+          }
+          delay = Math.min(delay * 2, 5000);
+          continue;
+        }
+        consecutiveFailures = 0;
+        delay = 900;
         if (selectedIdRef.current === agentId) {
           setActiveRun(trace.run);
           setSpans(trace.spans);
@@ -683,6 +717,19 @@ export default function App() {
         }
         if (!["queued", "running"].includes(trace.run.status)) {
           await Promise.all([refreshMessages(agentId), refreshAgents()]);
+          // The delta and the compare strip describe the pair of runs that just
+          // became the latest two; without this they kept naming the previous
+          // pair for the rest of the session.
+          if (selectedIdRef.current === agentId) {
+            await api
+              .compareRuns(agentId)
+              .then((compared) => {
+                if (selectedIdRef.current === agentId) {
+                  setRunCompare({ left: compared.left, right: compared.right });
+                }
+              })
+              .catch(() => undefined);
+          }
           return;
         }
       }
@@ -701,6 +748,12 @@ export default function App() {
       const result = await api.sendMessage(selected.id, content);
       if (selectedIdRef.current === selected.id) {
         setMessages((current) => [...current, result.message]);
+        // The run that was on screen is now the previous one. Without this the
+        // header kept comparing against the run before it, so every message
+        // after the first showed a delta that skipped a run, beside a compare
+        // strip naming two runs that were no longer displayed.
+        setPreviousUsage(activeRun?.usage ?? null);
+        setRunCompare(null);
         setActiveRun(result.run);
         setSpans(result.run.spans ?? []);
         setSelectedSpanId(null);
@@ -713,7 +766,9 @@ export default function App() {
       await pollRun(result.run.id, selected.id);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
-      setActiveRun(null);
+      // Deliberately not clearing activeRun: the Run may well still be running
+      // on the server, and blanking it here made the UI claim idle while Codex
+      // worked on for up to ten minutes, with the answer never arriving.
       await refreshAgents();
     }
   };
