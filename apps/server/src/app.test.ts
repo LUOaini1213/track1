@@ -40,6 +40,41 @@ describe("HTTP boundary", () => {
       headers: { authorization: "Bearer a-strong-test-token" },
     });
     expect(allowed.statusCode).toBe(200);
+
+    // The router percent-decodes before matching, so a path that fails a raw
+    // `request.url.startsWith("/api/")` test still reaches the API handler.
+    // This was a complete bypass, POST included.
+    for (const url of ["/%61pi/agents", "/api/%61gents", "/%61pi/%61gents"]) {
+      const encoded = await app.inject({ method: "GET", url });
+      expect(encoded.statusCode, url).toBe(401);
+    }
+    const encodedWrite = await app.inject({
+      method: "POST",
+      url: "/%61pi/agents",
+      payload: { name: "Intruder" },
+    });
+    expect(encodedWrite.statusCode).toBe(401);
+
+    // timingSafeEqual must reject a same-length token, not just a wrong length.
+    for (const header of [
+      "Bearer a-strong-test-tokeN",
+      "Bearer a-strong-test-token-x",
+      "Basic a-strong-test-token",
+      "a-strong-test-token",
+    ]) {
+      const wrong = await app.inject({
+        method: "GET",
+        url: "/api/agents",
+        headers: { authorization: header },
+      });
+      expect(wrong.statusCode, header).toBe(401);
+    }
+
+    // Liveness and the auth probe stay public, however the path is spelled.
+    for (const url of ["/api/health", "/api/auth", "/%61pi/health"]) {
+      const open = await app.inject({ method: "GET", url });
+      expect(open.statusCode, url).toBe(200);
+    }
     await app.close();
   },
     20_000,

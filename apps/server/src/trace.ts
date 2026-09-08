@@ -5,19 +5,36 @@ import type { SpanKind, SpanStatus, TraceSpan } from "./types.js";
 const now = () => new Date().toISOString();
 
 /**
- * Attributes that can echo user or workspace content. OpenTelemetry keeps the
- * equivalent GenAI content attributes Opt-In because of the PII risk, so the
- * same switch exists here (`TRACE_CAPTURE_CONTENT`). It defaults ON: an audit
- * tool whose deliverable is "which command failed, and with what exit code"
- * would gut its own root-cause story with content off.
+ * Attributes that carry no user or workspace content, and so survive
+ * `TRACE_CAPTURE_CONTENT=false`. OpenTelemetry keeps the equivalent GenAI
+ * content attributes Opt-In because of the PII risk, so the same switch exists
+ * here. It defaults ON: an audit tool whose deliverable is "which command
+ * failed, and with what exit code" would gut its own root-cause story with
+ * content off.
+ *
+ * This is an allowlist rather than a denylist because a denylist fails open.
+ * The previous version listed the five content-bearing keys it knew about, and
+ * `error` — which AgentService writes on the root span, carrying up to 16 KB of
+ * Codex stderr — was not among them, so the switch silently half-worked. Now an
+ * attribute the next call site invents is withheld until it is named safe.
+ *
+ * `ruleId` and `reason` are our own static rule text, not user data.
  */
-const CONTENT_ATTRIBUTE_KEYS = [
-  "command",
-  "errorText",
-  "failedStep",
-  "message",
-  "workspace",
-];
+const STRUCTURAL_ATTRIBUTE_KEYS = new Set([
+  "promptChars",
+  "chars",
+  "exitCode",
+  "itemType",
+  "ruleId",
+  "reason",
+  "threadId",
+  "codexType",
+  "keys",
+  "retryOfItemId",
+  "retriedSpanId",
+  "fileCount",
+  "unterminated",
+]);
 
 const CONTENT_WITHHELD = "[content capture disabled]";
 
@@ -75,8 +92,13 @@ export class TraceCollector {
       return attributes;
     }
     const next = { ...attributes };
-    for (const key of CONTENT_ATTRIBUTE_KEYS) {
-      if (next[key] !== undefined && next[key] !== null) {
+    for (const [key, value] of Object.entries(next)) {
+      if (value === undefined || value === null) {
+        continue;
+      }
+      const structural =
+        key.startsWith("gen_ai.") || STRUCTURAL_ATTRIBUTE_KEYS.has(key);
+      if (!structural) {
         next[key] = CONTENT_WITHHELD;
       }
     }

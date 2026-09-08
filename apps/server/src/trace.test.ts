@@ -89,6 +89,47 @@ describe("TraceCollector", () => {
     expect(command?.attributes["gen_ai.tool.name"]).toBe("shell");
   });
 
+  it("withholds content the denylist used to miss, including the root error", () => {
+    const collector = new TraceCollector("run-1", "agent-1", {
+      captureContent: false,
+    });
+    const root = collector.startSpan("invoke_agent Builder", "agent", null, {
+      promptChars: 62,
+    });
+    // AgentService writes this on the root span; for a non-zero Codex exit it
+    // embeds up to 16 KB of stderr. `error` was not in the old denylist, so the
+    // switch withheld the child spans and published the root verbatim.
+    collector.endSpan(root, "error", {
+      error: "Codex exited with code 1: /home/u/secret-project/.env not found",
+      somethingAddedLater: "invented after this filter was written",
+    });
+    const span = collector.snapshot()[0];
+    expect(span?.attributes.error).toBe("[content capture disabled]");
+    // An attribute nobody has classified yet fails closed.
+    expect(span?.attributes.somethingAddedLater).toBe(
+      "[content capture disabled]",
+    );
+    // Structure survives, so the trace is still navigable.
+    expect(span?.status).toBe("error");
+    expect(span?.attributes.promptChars).toBe(62);
+    expect(span?.attributes["gen_ai.operation.name"]).toBeUndefined();
+  });
+
+  it("keeps every gen_ai.* attribute when content capture is off", () => {
+    const collector = new TraceCollector("run-1", "agent-1", {
+      modelName: "ep-test",
+      captureContent: false,
+    });
+    const parent = collector.startSpan("runtime.spawn", "runtime", null);
+    collector.recordCodexEvent(parent, {
+      type: "turn.completed",
+      usage: { input_tokens: 900, output_tokens: 120 },
+    });
+    const turn = collector.snapshot().find((s) => s.kind === "llm");
+    expect(turn?.attributes["gen_ai.usage.input_tokens"]).toBe(900);
+    expect(turn?.attributes["gen_ai.request.model"]).toBe("ep-test");
+  });
+
   it("records model usage under the OTel GenAI token keys", () => {
     const collector = new TraceCollector("run-1", "agent-1", {
       modelName: "ep-test",

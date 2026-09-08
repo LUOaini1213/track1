@@ -3,7 +3,10 @@ import path from "node:path";
 import { z } from "zod";
 
 const envSchema = z.object({
-  HOST: z.string().default("0.0.0.0"),
+  // Loopback by default. Binding every interface is opt-in, and every path
+  // that wants it says so: docker-compose.yml, the Terraform cloud-init and
+  // .env.example all set HOST=0.0.0.0 explicitly.
+  HOST: z.string().default("127.0.0.1"),
   PORT: z.coerce.number().int().min(1).max(65535).default(3000),
   LOG_LEVEL: z.string().default("info"),
   APP_DATA_DIR: z.string().default(path.resolve(".data")),
@@ -61,10 +64,15 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
   const env = envSchema.parse(environment);
   const authToken = env.APP_AUTH_TOKEN?.trim() ?? "";
   const loopbackHosts = new Set(["127.0.0.1", "::1", "localhost"]);
-  if (env.NODE_ENV === "production" && !loopbackHosts.has(env.HOST)) {
+  // Reachability, not NODE_ENV, decides whether a token is required. A dev
+  // server on 0.0.0.0 is exactly as exposed as a production one: anyone on the
+  // network can create an Agent and have Codex execute prompts as this user.
+  if (!loopbackHosts.has(env.HOST)) {
     if (authToken.length < 24 || authToken.startsWith("replace-")) {
       throw new Error(
-        "APP_AUTH_TOKEN must contain at least 24 characters for a non-loopback production server",
+        "HOST=" +
+          env.HOST +
+          " binds a non-loopback interface, so APP_AUTH_TOKEN must be set to at least 24 characters that do not start with 'replace-'. Use HOST=127.0.0.1 for a local-only server.",
       );
     }
   }

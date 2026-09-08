@@ -42,12 +42,21 @@ export async function createApp(
         : false,
   });
 
+  // Public routes are matched against the ROUTE PATTERN, never the raw URL.
+  // The router percent-decodes, collapses duplicate slashes and matches
+  // case-insensitively before dispatch, so `/%61pi/agents`, `//api/agents` and
+  // `/API/agents` all reach `/api/agents` while failing a `request.url`
+  // startsWith("/api/") test — each was a full authentication bypass, POST
+  // included. A request that matched no route has no pattern and falls through
+  // to the 404 / static handler, which serves nothing privileged.
+  const PUBLIC_ROUTES = new Set(["/api/health", "/api/auth"]);
+
   app.addHook("onRequest", async (request, reply) => {
+    const route = request.routeOptions?.url ?? "";
     if (
       !config.authToken ||
-      !request.url.startsWith("/api/") ||
-      request.url === "/api/health" ||
-      request.url === "/api/auth"
+      !route.startsWith("/api/") ||
+      PUBLIC_ROUTES.has(route)
     ) {
       return;
     }
