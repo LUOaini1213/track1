@@ -12,12 +12,13 @@
   },
   "scripts": {
     "dev": "concurrently -n server,web -c cyan,magenta \"npm run dev -w @launchpad/server\" \"npm run dev -w @launchpad/web\"",
-    "build": "npm run build -w @launchpad/web && npm run build -w @launchpad/server",
-    "typecheck": "npm run typecheck --workspaces --if-present",
+    "build": "npm run build -w @launchpad/contract && npm run build -w @launchpad/web && npm run build -w @launchpad/server",
+    "typecheck": "npm run build -w @launchpad/contract && npm run typecheck --workspaces --if-present",
     "test": "npm run test -w @launchpad/contract && npm run test -w @launchpad/server",
-    "check": "npm run typecheck && npm run test && npm run build",
+    "check": "npm run typecheck && npm run test && npm run build && npm run smoke",
     "poc": "./scripts/start-local-poc.sh",
-    "start": "npm run start -w @launchpad/server"
+    "start": "npm run start -w @launchpad/server",
+    "smoke": "node scripts/smoke-start.mjs"
   },
   "devDependencies": {
     "concurrently": "^9.2.1",
