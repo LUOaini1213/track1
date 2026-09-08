@@ -44,7 +44,10 @@ afterEach(async () => {
   );
 });
 
-async function makeService(runner: AgentRunner = new FakeRunner()): Promise<AgentService> {
+async function makeService(
+  runner: AgentRunner = new FakeRunner(),
+  wrapStore: (store: JsonStore) => JsonStore = (store) => store,
+): Promise<AgentService> {
   const root = await mkdtemp(path.join(tmpdir(), "launchpad-test-"));
   temporaryDirectories.push(root);
   const config = loadConfig({
@@ -57,7 +60,7 @@ async function makeService(runner: AgentRunner = new FakeRunner()): Promise<Agen
   });
   const service = new AgentService(
     config,
-    new JsonStore(path.join(root, "data", "db.json")),
+    wrapStore(new JsonStore(path.join(root, "data", "db.json"))),
     new WorkspaceManager(path.join(root, "workspaces")),
     runner,
   );
@@ -205,4 +208,68 @@ describe("Agent lifecycle", () => {
     expect(after).toBe(before);
     expect(service.getAgent(agent.id).status).toBe("ready");
   });
+
+  it("honours Stop sent back to back with a message", async () => {
+    // Two HTTP requests landing in the same tick. Cancelling before marking
+    // left the admission invisible to cancelExecution, so the Agent read
+    // "stopped" while Codex ran on, and the finishing Run flipped it back to
+    // "ready" — Stop was silently discarded.
+    let cancelled = false;
+    let ranToCompletion = false;
+    const service = await makeService({
+      run: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 800));
+        if (!cancelled) ranToCompletion = true;
+        return { output: "done", threadId: "t", usage: null };
+      },
+      cancel: async () => {
+        cancelled = true;
+        return true;
+      },
+      isAvailable: async () => true,
+    });
+    const agent = await service.createAgent({ name: "Racer" });
+
+    await Promise.allSettled([
+      service.sendMessage(agent.id, "something long"),
+      service.stopAgent(agent.id),
+    ]);
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+
+    expect(service.getAgent(agent.id).status).toBe("stopped");
+    expect(ranToCompletion).toBe(false);
+    for (const run of service.getRuns(agent.id)) {
+      expect(run.status).not.toBe("completed");
+    }
+    await service.shutdown();
+  }, 20_000);
+
+  it("does not resurrect a stopped Agent when a Run finishes", async () => {
+    let release: (() => void) | null = null;
+    const service = await makeService({
+      run: async () => {
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        return { output: "done", threadId: "t", usage: null };
+      },
+      cancel: async () => false,
+      isAvailable: async () => true,
+    });
+    const agent = await service.createAgent({ name: "Finisher" });
+    await service.sendMessage(agent.id, "work");
+    await expect.poll(() => release !== null).toBe(true);
+
+    // Stop lands while the runner is mid-flight; the Run then completes anyway.
+    const stopping = service.stopAgent(agent.id).catch(() => undefined);
+    release?.();
+    await stopping;
+    await expect
+      .poll(() => service.getRuns(agent.id)[0]?.status)
+      .not.toBe("running");
+
+    expect(service.getAgent(agent.id).status).toBe("stopped");
+    await service.shutdown();
+  }, 20_000);
+
 });

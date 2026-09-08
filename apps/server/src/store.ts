@@ -87,12 +87,37 @@ export class JsonStore {
     return result;
   }
 
+  /**
+   * Windows fails `rename` with EPERM/EBUSY whenever another process holds the
+   * target open for even a moment — an antivirus scanner, the search indexer, an
+   * editor previewing the file. That is transient, but one failure here used to
+   * surface as "the Codex run failed", discarding the Run's output, its
+   * assistant message and the Codex thread id. Retry briefly before giving up;
+   * this is the same workaround graceful-fs exists to provide.
+   *
+   * The temporary file carries the pid so a second process pointed at the same
+   * store cannot truncate or steal an in-flight write.
+   */
   private async persist(data: Database = this.data): Promise<void> {
-    const temporaryPath = this.filePath + ".tmp";
+    const temporaryPath = this.filePath + "." + process.pid + ".tmp";
     await writeFile(temporaryPath, JSON.stringify(data, null, 2) + "\n", {
       encoding: "utf8",
       mode: 0o600,
     });
-    await rename(temporaryPath, this.filePath);
+    const transient = new Set(["EPERM", "EBUSY", "EACCES", "ENOTEMPTY"]);
+    let delay = 20;
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        await rename(temporaryPath, this.filePath);
+        return;
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code ?? "";
+        if (attempt >= 8 || !transient.has(code)) {
+          throw error;
+        }
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        delay = Math.min(delay * 2, 250);
+      }
+    }
   }
 }

@@ -75,6 +75,22 @@ export class AgentService {
     registerSecrets([config.arkApiKey, config.authToken]);
   }
 
+  /**
+   * Terminal Run outcomes went to no log at all: a denied Run, a failed Run and
+   * a Run that stranded its Agent were indistinguishable from a healthy one in
+   * the server output. Kept deliberately small — a seam, not a logging library.
+   */
+  private log(level: "warn" | "error", message: string): void {
+    if (this.config.logLevel === "silent") {
+      return;
+    }
+    if (level === "error") {
+      console.error("[launchpad] " + message);
+    } else {
+      console.warn("[launchpad] " + message);
+    }
+  }
+
   async initialize(): Promise<void> {
     await this.store.initialize();
     await this.workspaces.initialize();
@@ -157,6 +173,10 @@ export class AgentService {
 
   async deleteAgent(id: string): Promise<{ archivedWorkspace: string }> {
     const agent = this.getAgent(id);
+    // Same ordering as stopAgent, and for a sharper reason: archive() renames
+    // the workspace, and without the mark a Run admitted a moment earlier kept
+    // executing inside the directory being moved out from under it.
+    await this.setStatus(id, "stopped");
     await this.cancelExecution(id);
     const archivedWorkspace = await this.workspaces.archive(agent);
     await this.store.mutate((database) => {
@@ -171,10 +191,21 @@ export class AgentService {
     return this.setStatus(id, "ready");
   }
 
+  /**
+   * Mark first, then cancel. Cancelling first left a window: a sendMessage
+   * whose admission was already queued in the store had not yet set
+   * activeExecutions, so cancelExecution found nothing to cancel and the
+   * request was cleared again before executeRun looked at it. The Agent was
+   * then marked "stopped" while Codex ran to completion, and the finishing Run
+   * flipped it back to "ready". Marking first makes the store queue order the
+   * decision: the admission either lands before the mark and is visible to
+   * cancelExecution, or lands after it and is rejected as stopped.
+   */
   async stopAgent(id: string): Promise<Agent> {
     this.getAgent(id);
+    const stopped = await this.setStatus(id, "stopped");
     await this.cancelExecution(id);
-    return this.setStatus(id, "stopped");
+    return stopped;
   }
 
   getMessages(agentId: string): Message[] {
@@ -381,6 +412,7 @@ export class AgentService {
         storedRun.traceId = collector.traceId;
       }
     });
+    let persistenceFailed = false;
     const rootSpanId = collector.startSpan(
       "invoke_agent " + agentAtStart.name,
       "agent",
@@ -418,6 +450,7 @@ export class AgentService {
         rootSpanId,
         { workspace: agentAtStart.workspacePath },
       );
+      let succeeded = false;
       try {
         const result = await this.runner.run({
           agentId: agentAtStart.id,
@@ -453,6 +486,13 @@ export class AgentService {
         collector.endSpan(rootSpanId, "ok");
         const completedAt = now();
         const output = redactText(result.output);
+        // Codex has succeeded. From here the only thing that can fail is the
+        // store, and a store failure is not a Codex failure: recording it as one
+        // used to relabel the already-green runtime.spawn span as the culprit
+        // and drop the output, the assistant message and the thread id, so the
+        // next turn resumed nothing. `succeeded` moves the remaining work out of
+        // the runner's catch.
+        succeeded = true;
         await this.persistTrace(run.id, collector);
         await this.store.mutate((database) => {
           const storedRun = database.runs.find((item) => item.id === run.id);
@@ -472,12 +512,23 @@ export class AgentService {
             content: output,
             createdAt: completedAt,
           });
-          agent.status = "ready";
+          // An operator who pressed Stop while this Run was finishing gets to
+          // keep that decision; the Run's own completion must not undo it.
+          if (agent.status !== "stopped") {
+            agent.status = "ready";
+          }
           agent.codexThreadId = result.threadId;
           agent.lastError = null;
           agent.updatedAt = completedAt;
         });
       } catch (error) {
+        if (succeeded) {
+          // Codex finished; the store did not. Leave the trace's verdict on the
+          // runtime alone and let the outer handler record a persistence
+          // failure, not a Codex one.
+          persistenceFailed = true;
+          throw error;
+        }
         const runtimeStatus =
           error instanceof PolicyDeniedError
             ? "denied"
@@ -497,7 +548,12 @@ export class AgentService {
       const completedAt = now();
       const cancelled = error instanceof RunCancelledError;
       const denied = error instanceof PolicyDeniedError;
-      const message = error instanceof Error ? error.message : String(error);
+      const raw = error instanceof Error ? error.message : String(error);
+      // Codex already produced a result; only the store failed. Saying so keeps
+      // the operator looking at the disk rather than at the model.
+      const message = persistenceFailed
+        ? "The Agent finished, but its result could not be saved: " + raw
+        : raw;
       const rootStatus = cancelled ? "cancelled" : denied ? "denied" : "error";
       collector.endOpenSpans(rootStatus, {
         errorText: "Run ended before this step completed",
@@ -511,6 +567,16 @@ export class AgentService {
           error: redactText(message),
         });
       }
+      this.log(
+        cancelled || denied ? "warn" : "error",
+        (denied ? "run denied" : cancelled ? "run cancelled" : "run failed") +
+          " runId=" +
+          run.id +
+          " agentId=" +
+          agentAtStart.id +
+          ": " +
+          message,
+      );
       await this.persistTrace(run.id, collector);
       const spans = collector.snapshot();
       const partialUsage = usageFromSpans(spans);
