@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import path from "node:path";
 import type { AppConfig } from "./config.js";
 import { isArkConfigured } from "./config.js";
 import { HttpError, PolicyDeniedError, RunCancelledError } from "./errors.js";
@@ -7,6 +8,7 @@ import {
   inspectForSecretExfiltration,
 } from "./policy.js";
 import { redactText, registerSecrets } from "./redact.js";
+import { SpanStore } from "./span-store.js";
 import { JsonStore } from "./store.js";
 import { estimateCostUsd } from "./cost.js";
 import { compareRuns } from "./run-compare.js";
@@ -71,6 +73,9 @@ export class AgentService {
     private readonly store: JsonStore,
     private readonly workspaces: WorkspaceManager,
     private readonly runner: AgentRunner,
+    private readonly spanStore: SpanStore = new SpanStore(
+      path.join(config.dataDirectory, "spans"),
+    ),
   ) {
     registerSecrets([config.arkApiKey, config.authToken]);
   }
@@ -93,32 +98,31 @@ export class AgentService {
 
   async initialize(): Promise<void> {
     await this.store.initialize();
+    await this.spanStore.initialize();
     await this.workspaces.initialize();
+
+    // Spans used to live inside launchpad.json. Move any that are still there
+    // into their own files, so an existing store keeps working and the main
+    // document stops growing with them.
+    const inline = this.store.read((database) =>
+      database.runs
+        .filter((run) => Array.isArray(run.spans) && run.spans.length > 0)
+        .map((run) => ({ id: run.id, spans: run.spans })),
+    );
+    for (const run of inline) {
+      const existing = await this.spanStore.read(run.id);
+      if (existing.length === 0) {
+        await this.spanStore.write(run.id, run.spans);
+      }
+    }
+
     await this.store.mutate((database) => {
       for (const run of database.runs) {
+        run.spans = [];
         if (run.status === "queued" || run.status === "running") {
-          const completedAt = now();
           run.status = "cancelled";
           run.error = "Server restarted while this run was active";
-          run.completedAt = completedAt;
-          // The Run is over; its spans said otherwise. Left open they rendered
-          // as still-running "…" bars on a cancelled Run forever, and
-          // problemSpans found nothing to point at.
-          for (const span of run.spans) {
-            if (span.endedAt === null) {
-              span.status = "cancelled";
-              span.endedAt = completedAt;
-              span.durationMs = Math.max(
-                0,
-                Date.parse(completedAt) - Date.parse(span.startedAt),
-              );
-              span.attributes = {
-                ...span.attributes,
-                errorText: run.error,
-                unterminated: true,
-              };
-            }
-          }
+          run.completedAt = now();
         }
       }
       for (const agent of database.agents) {
@@ -128,6 +132,41 @@ export class AgentService {
         }
       }
     });
+
+    // A Run interrupted by a restart left its spans open, so a finished Run
+    // rendered as permanently running. Close them in their own file now.
+    for (const run of this.store.read((database) =>
+      database.runs.filter((item) => item.status === "cancelled"),
+    )) {
+      const spans = await this.spanStore.read(run.id);
+      let changed = false;
+      for (const span of spans) {
+        if (span.endedAt === null) {
+          const endedAt = run.completedAt ?? now();
+          span.status = "cancelled";
+          span.endedAt = endedAt;
+          span.durationMs = Math.max(
+            0,
+            Date.parse(endedAt) - Date.parse(span.startedAt),
+          );
+          span.attributes = {
+            ...span.attributes,
+            errorText: run.error,
+            unterminated: true,
+          };
+          changed = true;
+        }
+      }
+      if (changed) {
+        await this.spanStore.write(run.id, spans);
+      }
+    }
+
+    const known = new Set(this.store.read((database) => database.runs.map((r) => r.id)));
+    const orphans = await this.spanStore.orphans(known);
+    if (orphans.length > 0) {
+      await this.spanStore.delete(orphans);
+    }
   }
 
   listAgents(): Agent[] {
@@ -247,11 +286,15 @@ export class AgentService {
     // Remove the record first. Archiving used to come first and, when it threw,
     // left the Agent in the store with its workspace already moved — every
     // retry then failed with ENOENT and the Agent could never be deleted.
+    const runIds = this.store.read((database) =>
+      database.runs.filter((run) => run.agentId === id).map((run) => run.id),
+    );
     await this.store.mutate((database) => {
       database.agents = database.agents.filter((item) => item.id !== id);
       database.messages = database.messages.filter((item) => item.agentId !== id);
       database.runs = database.runs.filter((item) => item.agentId !== id);
     });
+    await this.spanStore.delete(runIds);
     const archivedWorkspace = await this.workspaces.archive(agent);
     if (!archivedWorkspace) {
       this.log(
@@ -303,18 +346,19 @@ export class AgentService {
     return run;
   }
 
-  getTrace(runId: string): {
+  async getTrace(runId: string): Promise<{
     run: AgentRun;
     traceId: string;
     spans: AgentRun["spans"];
     usage: AgentRun["usage"];
     estimatedCostUsd: number | null;
-  } {
+  }> {
     const run = this.getRun(runId);
+    const spans = await this.spanStore.read(runId);
     return {
-      run,
+      run: { ...run, spans },
       traceId: run.traceId,
-      spans: run.spans,
+      spans,
       usage: run.usage,
       estimatedCostUsd: estimateCostUsd(run.usage, this.config.costRates),
     };
@@ -332,15 +376,15 @@ export class AgentService {
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
   }
 
-  compareAgentRuns(
+  async compareAgentRuns(
     agentId: string,
     leftId?: string,
     rightId?: string,
-  ): {
+  ): Promise<{
     agentId: string;
     left: ReturnType<typeof compareRuns>["left"];
     right: ReturnType<typeof compareRuns>["right"];
-  } {
+  }> {
     const runs = this.getRuns(agentId);
     const pick = (id: string | undefined, fallback: AgentRun | undefined) => {
       if (!id) {
@@ -357,7 +401,15 @@ export class AgentService {
     if (!left || !right) {
       throw new HttpError(404, "Need two Runs on this Agent to compare");
     }
-    const compared = compareRuns(left, right, this.config.costRates);
+    const [leftSpans, rightSpans] = await Promise.all([
+      this.spanStore.read(left.id),
+      this.spanStore.read(right.id),
+    ]);
+    const compared = compareRuns(
+      { ...left, spans: leftSpans },
+      { ...right, spans: rightSpans },
+      this.config.costRates,
+    );
     return { agentId, ...compared };
   }
 
@@ -451,14 +503,7 @@ export class AgentService {
     collector: TraceCollector,
   ): Promise<void> {
     collector.flush();
-    const spans = collector.snapshot();
-    await this.store.mutate((database) => {
-      const storedRun = database.runs.find((item) => item.id === runId);
-      if (storedRun) {
-        storedRun.traceId = collector.traceId;
-        storedRun.spans = spans;
-      }
-    });
+    await this.spanStore.write(runId, collector.snapshot());
   }
 
   private async executeRun(agentAtStart: Agent, run: AgentRun): Promise<void> {
@@ -466,14 +511,8 @@ export class AgentService {
       modelName: this.config.arkModel || null,
       captureContent: this.config.traceCaptureContent,
       onChange: (spans) => {
-        void this.store
-          .mutate((database) => {
-            const storedRun = database.runs.find((item) => item.id === run.id);
-            if (storedRun) {
-              storedRun.traceId = collector.traceId;
-              storedRun.spans = spans;
-            }
-          })
+        void this.spanStore
+          .write(run.id, spans)
           // Debounced best-effort persistence: a failed interim write must not
           // become an unhandled rejection and take the process down mid-run.
           // The final trace is written again by persistTrace.
@@ -579,7 +618,6 @@ export class AgentService {
           storedRun.usage = result.usage;
           storedRun.completedAt = completedAt;
           storedRun.traceId = collector.traceId;
-          storedRun.spans = collector.snapshot();
           database.messages.push({
             id: randomUUID(),
             agentId: agent.id,
@@ -664,7 +702,6 @@ export class AgentService {
           storedRun.error = redactText(message);
           storedRun.completedAt = completedAt;
           storedRun.traceId = collector.traceId;
-          storedRun.spans = spans;
           storedRun.usage = partialUsage;
         }
         if (agent) {

@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { AgentService } from "./agent-service.js";
 import { loadConfig } from "./config.js";
 import { PROTECTED_FIXTURE_RELATIVE } from "./policy.js";
+import type { SpanStore } from "./span-store.js";
 import { JsonStore } from "./store.js";
 import type { AgentRunner, RunnerRequest, RunnerResult } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
@@ -150,7 +151,7 @@ describe("Agent lifecycle", () => {
     const agent = await service.createAgent({ name: "Traced" });
     const { run } = await service.sendMessage(agent.id, "write hello world");
     await expect.poll(() => service.getRun(run.id).status).toBe("completed");
-    const trace = service.getTrace(run.id);
+    const trace = await service.getTrace(run.id);
     const names = trace.spans.map((span) => span.name);
     expect(trace.traceId).toBeTruthy();
     expect(names).toContain("invoke_agent Traced");
@@ -177,9 +178,9 @@ describe("Agent lifecycle", () => {
     const agent = await service.createAgent({ name: "Broken" });
     const { run } = await service.sendMessage(agent.id, "write hello world");
     await expect.poll(() => service.getRun(run.id).status).toBe("failed");
-    const failing = service
-      .getTrace(run.id)
-      .spans.find((span) => span.name === "runtime.spawn");
+    const failing = (await service.getTrace(run.id)).spans.find(
+      (span) => span.name === "runtime.spawn",
+    );
     expect(failing?.status).toBe("error");
   });
 
@@ -202,9 +203,9 @@ describe("Agent lifecycle", () => {
     await expect.poll(() => service.getRun(run.id).status).toBe("failed");
     expect(runnerCalls).toBe(0);
     expect(service.getRun(run.id).error).toContain("Policy denied");
-    const denied = service
-      .getTrace(run.id)
-      .spans.find((span) => span.kind === "policy" && span.status === "denied");
+    const denied = (await service.getTrace(run.id)).spans.find(
+      (span) => span.kind === "policy" && span.status === "denied",
+    );
     expect(denied).toBeTruthy();
     const after = await hashProtectedFixture(agent.workspacePath);
     expect(after).toBe(before);
@@ -344,9 +345,10 @@ describe("Agent lifecycle", () => {
 
     await service.initialize();
 
-    const run = service.getRun("11111111-1111-4111-8111-111111111111");
+    const trace = await service.getTrace("11111111-1111-4111-8111-111111111111");
+    const run = trace.run;
     expect(run.status).toBe("cancelled");
-    const span = run.spans[0];
+    const span = trace.spans[0];
     expect(span?.status).toBe("cancelled");
     expect(span?.endedAt).not.toBeNull();
     expect(span?.durationMs).not.toBeNull();
@@ -435,5 +437,55 @@ describe("Agent lifecycle", () => {
     await rm(agent.workspacePath, { recursive: true, force: true }).catch(
       () => undefined,
     );
+  }, 20_000);
+
+  it("moves spans out of an existing store on first start", async () => {
+    // Stores written before spans had their own files carry them inline. They
+    // must keep working, and the main document must stop carrying them.
+    const service = await makeService();
+    const agent = await service.createAgent({ name: "Legacy" });
+    const runId = "44444444-4444-4444-8444-444444444444";
+    const store = (service as unknown as { store: JsonStore }).store;
+    await store.mutate((database) => {
+      database.runs.push({
+        id: runId, agentId: agent.id, status: "completed", prompt: "p",
+        output: "o", error: null, usage: null, startedAt: null,
+        completedAt: "2026-01-01T00:00:02.000Z", createdAt: "2026-01-01T00:00:00.000Z",
+        traceId: "t",
+        spans: [
+          {
+            traceId: "t", spanId: "s1", parentSpanId: null, runId, agentId: agent.id,
+            name: "invoke_agent Legacy", kind: "agent", status: "ok",
+            startedAt: "2026-01-01T00:00:00.000Z",
+            endedAt: "2026-01-01T00:00:02.000Z", durationMs: 2000, attributes: {},
+          },
+        ],
+      } as never);
+    });
+
+    await service.initialize();
+
+    // Readable through the trace endpoint...
+    const trace = await service.getTrace(runId);
+    expect(trace.spans.map((s) => s.spanId)).toEqual(["s1"]);
+    // ...and no longer inside the main document.
+    const inline = store.read((database) =>
+      database.runs.find((run) => run.id === runId)?.spans,
+    );
+    expect(inline).toEqual([]);
+  }, 20_000);
+
+  it("removes span files when the Agent that owns them is deleted", async () => {
+    const service = await makeService();
+    const agent = await service.createAgent({ name: "Sweeper" });
+    const { run } = await service.sendMessage(agent.id, "do something");
+    await expect
+      .poll(() => service.getRuns(agent.id)[0]?.status)
+      .toBe("completed");
+    expect((await service.getTrace(run.id)).spans.length).toBeGreaterThan(0);
+
+    await service.deleteAgent(agent.id);
+    const spanStore = (service as unknown as { spanStore: SpanStore }).spanStore;
+    expect(await spanStore.read(run.id)).toEqual([]);
   }, 20_000);
 });
