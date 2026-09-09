@@ -7,7 +7,8 @@ export interface SystemInfo {
   arkModel: string | null;
   codexAvailable: boolean;
   codexSandboxMode: string;
-  runtimeProvider: "local-process" | "container";
+  runtimeProvider: "local-process" | "container" | "replay";
+  replay: boolean;
   containerEngine: string | null;
   runtime: string;
 }

@@ -1,0 +1,25 @@
+{
+  "name": "hello-world-cli",
+  "description": "Happy path: the Agent scaffolds a TypeScript hello-world CLI, runs it, runs its tests, and summarizes. Every tool step exits 0.",
+  "source": "Authored in the Codex CLI 0.111 `exec --json` event schema (thread.started, turn.started, item.started / item.completed, turn.completed) to mirror a typical Run of this prompt. Not a verbatim recording; offsets are typical for the model, not measured.",
+  "recordedAt": null,
+  "match": ["hello", "cli"],
+  "default": true,
+  "exitCode": 0,
+  "stderr": "",
+  "events": [
+    { "atMs": 0, "event": { "type": "thread.started", "thread_id": "0199f0c2-4a5e-7d3b-8a11-2f6b7c9e1d42" } },
+    { "atMs": 40, "event": { "type": "turn.started" } },
+    { "atMs": 1900, "event": { "type": "item.completed", "item": { "id": "item_0", "type": "reasoning", "text": "**Planning the CLI**\n\nI'll look at the workspace first, then add a small `greet()` module, a CLI entry that reads `--name`, and a `node:test` suite. Node 22 can run TypeScript directly with `--experimental-strip-types`, so no dependencies are needed in a sandbox without network." } } },
+    { "atMs": 2100, "event": { "type": "item.started", "item": { "id": "item_1", "type": "command_execution", "command": "bash -lc 'ls -la'", "aggregated_output": "", "exit_code": null, "status": "in_progress" } } },
+    { "atMs": 2350, "event": { "type": "item.completed", "item": { "id": "item_1", "type": "command_execution", "command": "bash -lc 'ls -la'", "aggregated_output": "total 24\ndrwxr-xr-x 3 node node 4096 Sep  2 10:12 .\ndrwxr-xr-x 4 node node 4096 Sep  2 10:12 ..\n-rw-r--r-- 1 node node   41 Sep  2 10:12 .gitignore\ndrwxr-xr-x 2 node node 4096 Sep  2 10:12 .secrets\n-rw-r--r-- 1 node node  512 Sep  2 10:12 AGENTS.md\n-rw-r--r-- 1 node node  153 Sep  2 10:12 README.md\n", "exit_code": 0, "status": "completed" } } },
+    { "atMs": 4200, "event": { "type": "item.completed", "item": { "id": "item_2", "type": "reasoning", "text": "**Writing the files**\n\nAdding package.json with a test script, src/index.ts with greet() and the CLI entry, and test/index.test.ts with two cases." } } },
+    { "atMs": 4600, "event": { "type": "item.completed", "item": { "id": "item_3", "type": "file_change", "changes": [ { "path": "package.json", "kind": "add" }, { "path": "src/index.ts", "kind": "add" }, { "path": "test/index.test.ts", "kind": "add" } ], "status": "completed" } } },
+    { "atMs": 6400, "event": { "type": "item.started", "item": { "id": "item_4", "type": "command_execution", "command": "bash -lc 'node --experimental-strip-types src/index.ts --name TechJam'", "aggregated_output": "", "exit_code": null, "status": "in_progress" } } },
+    { "atMs": 6650, "event": { "type": "item.completed", "item": { "id": "item_4", "type": "command_execution", "command": "bash -lc 'node --experimental-strip-types src/index.ts --name TechJam'", "aggregated_output": "Hello, TechJam!\n", "exit_code": 0, "status": "completed" } } },
+    { "atMs": 7000, "event": { "type": "item.started", "item": { "id": "item_5", "type": "command_execution", "command": "bash -lc 'node --experimental-strip-types --test test/index.test.ts'", "aggregated_output": "", "exit_code": null, "status": "in_progress" } } },
+    { "atMs": 7600, "event": { "type": "item.completed", "item": { "id": "item_5", "type": "command_execution", "command": "bash -lc 'node --experimental-strip-types --test test/index.test.ts'", "aggregated_output": "TAP version 13\n# Subtest: greet() defaults to world\nok 1 - greet() defaults to world\n  ---\n  duration_ms: 1.21\n  ...\n# Subtest: greet() uses --name\nok 2 - greet() uses --name\n  ---\n  duration_ms: 0.34\n  ...\n1..2\n# tests 2\n# suites 0\n# pass 2\n# fail 0\n# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 48.9\n", "exit_code": 0, "status": "completed" } } },
+    { "atMs": 9200, "event": { "type": "item.completed", "item": { "id": "item_6", "type": "agent_message", "text": "Created a TypeScript hello-world CLI and verified it.\n\nFiles:\n- `package.json` — `\"type\": \"module\"`; `npm test` runs `node --experimental-strip-types --test test/index.test.ts`\n- `src/index.ts` — `greet(name)` plus the CLI entry that reads `--name` (defaults to `world`)\n- `test/index.test.ts` — two `node:test` cases: the default greeting and the `--name` override\n\nChecks:\n- `node --experimental-strip-types src/index.ts --name TechJam` → `Hello, TechJam!`\n- `node --experimental-strip-types --test test/index.test.ts` → 2 passed, 0 failed\n\nNo dependencies were installed: the sandbox has no network access and none were needed." } } },
+    { "atMs": 9210, "event": { "type": "turn.completed", "usage": { "input_tokens": 21518, "cached_input_tokens": 15872, "output_tokens": 1093 } } }
+  ]
+}

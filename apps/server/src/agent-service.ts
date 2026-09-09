@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import type { AppConfig } from "./config.js";
-import { isArkConfigured } from "./config.js";
+import { isArkConfigured, isReplayRuntime } from "./config.js";
 import { HttpError, PolicyDeniedError, RunCancelledError } from "./errors.js";
 import {
   commandFromCodexEvent,
@@ -418,7 +418,7 @@ export class AgentService {
     agentId: string,
     prompt: string,
   ): Promise<{ run: AgentRun; message: Message }> {
-    if (!isArkConfigured(this.config)) {
+    if (!isArkConfigured(this.config) && !isReplayRuntime(this.config)) {
       throw new HttpError(
         503,
         "Ark is not configured. Set ARK_API_KEY and ARK_MODEL, then restart.",
@@ -481,6 +481,7 @@ export class AgentService {
   }
 
   async systemInfo(): Promise<Record<string, unknown>> {
+    const replay = isReplayRuntime(this.config);
     return {
       arkConfigured: isArkConfigured(this.config),
       arkBaseUrl: this.config.arkBaseUrl,
@@ -488,12 +489,14 @@ export class AgentService {
       codexAvailable: await this.runner.isAvailable(),
       codexSandboxMode: this.config.codexSandboxMode,
       runtimeProvider: this.config.runtimeProvider,
+      replay,
       containerEngine:
         this.config.runtimeProvider === "container"
           ? this.config.containerEngine
           : null,
-      runtime:
-        this.config.runtimeProvider === "container"
+      runtime: replay
+        ? "Replay of recorded Codex events (no model, no key)"
+        : this.config.runtimeProvider === "container"
           ? "Codex CLI in " + this.config.containerEngine + " Runtime"
           : "Codex CLI in application container",
     };
@@ -529,7 +532,11 @@ export class AgentService {
 
   private async executeRun(agentAtStart: Agent, run: AgentRun): Promise<void> {
     const collector = new TraceCollector(run.id, agentAtStart.id, {
-      modelName: this.config.arkModel || null,
+      // A replayed recording did not use the locally configured model, so its
+      // `chat` spans carry no model name rather than borrowing ARK_MODEL.
+      modelName: isReplayRuntime(this.config)
+        ? null
+        : this.config.arkModel || null,
       captureContent: this.config.traceCaptureContent,
       onChange: (spans) => {
         void this.spanStore

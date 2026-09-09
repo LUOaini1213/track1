@@ -6,10 +6,12 @@
   "main": "dist/index.js",
   "scripts": {
     "dev": "tsx watch src/index.ts",
+    "dev:replay": "tsx watch src/replay-dev.ts",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
-    "start": "node dist/index.js"
+    "start": "node dist/index.js",
+    "start:replay": "node dist/replay-dev.js"
   },
   "dependencies": {
     "@fastify/cors": "^11.1.0",

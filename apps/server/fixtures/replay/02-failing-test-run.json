@@ -1,0 +1,22 @@
+{
+  "name": "failing-test-run",
+  "description": "Failed task: the first test run fails on an assertion, the Agent's patch introduces a syntax error, and the model endpoint then rate-limits the retry. The Run ends with exit code 1; the waterfall has two failing tool spans and one runtime error.",
+  "source": "Authored in the Codex CLI 0.111 `exec --json` event schema. Not a verbatim recording; the TAP and Node error output is what those commands print for this code. Offsets are typical, not measured.",
+  "recordedAt": null,
+  "match": ["failing test", "fix the failing", "flaky", "make the tests pass", "tests pass"],
+  "default": false,
+  "exitCode": 1,
+  "stderr": "Error: stream error: 429 Too Many Requests; retry limit reached\n",
+  "events": [
+    { "atMs": 0, "event": { "type": "thread.started", "thread_id": "0199f0c9-1b7e-7ac2-9d4f-8e3a5c2b7f10" } },
+    { "atMs": 40, "event": { "type": "turn.started" } },
+    { "atMs": 1500, "event": { "type": "item.completed", "item": { "id": "item_0", "type": "reasoning", "text": "**Running the tests first**\n\nBefore changing anything I want to see the actual failure." } } },
+    { "atMs": 1600, "event": { "type": "item.started", "item": { "id": "item_1", "type": "command_execution", "command": "bash -lc 'node --test'", "aggregated_output": "", "exit_code": null, "status": "in_progress" } } },
+    { "atMs": 2400, "event": { "type": "item.completed", "item": { "id": "item_1", "type": "command_execution", "command": "bash -lc 'node --test'", "aggregated_output": "TAP version 13\n# Subtest: greet() addresses the caller by name\nnot ok 1 - greet() addresses the caller by name\n  ---\n  duration_ms: 1.83\n  location: 'test/greet.test.js:6:1'\n  failure: |-\n    Expected values to be strictly equal:\n\n    'Hello, TechJam' !== 'Hello, TechJam!'\n  code: 'ERR_ASSERTION'\n  ...\n1..1\n# tests 1\n# pass 0\n# fail 1\n", "exit_code": 1, "status": "failed" } } },
+    { "atMs": 4200, "event": { "type": "item.completed", "item": { "id": "item_2", "type": "reasoning", "text": "**Fixing the greeting**\n\nThe implementation drops the exclamation mark the test expects. Updating the template literal in src/greet.js." } } },
+    { "atMs": 4400, "event": { "type": "item.completed", "item": { "id": "item_3", "type": "file_change", "changes": [ { "path": "src/greet.js", "kind": "update" } ], "status": "completed" } } },
+    { "atMs": 4600, "event": { "type": "item.started", "item": { "id": "item_4", "type": "command_execution", "command": "bash -lc 'node --test'", "aggregated_output": "", "exit_code": null, "status": "in_progress" } } },
+    { "atMs": 5300, "event": { "type": "item.completed", "item": { "id": "item_4", "type": "command_execution", "command": "bash -lc 'node --test'", "aggregated_output": "file:///workspace/src/greet.js:3\n  return `Hello, ${name}!;\n         ^^^^^^^^^^^^^^^^^\n\nSyntaxError: Unterminated template literal\n    at compileSourceTextModule (node:internal/modules/esm/utils:344:16)\n\nNode.js v22.12.0\n# tests 0\n# pass 0\n# fail 1\n", "exit_code": 1, "status": "failed" } } },
+    { "atMs": 6900, "event": { "type": "error", "message": "stream error: 429 Too Many Requests; retry limit reached" } }
+  ]
+}

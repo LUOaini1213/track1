@@ -115,6 +115,21 @@ export async function streamCodexProcess(options: {
   if (signals.outputExceeded) {
     throw new Error("Codex output exceeded CODEX_MAX_OUTPUT_BYTES");
   }
+  return completeCodexRun(parsed, exitCode, stderr, label);
+}
+
+/**
+ * Turn a finished event stream into a result, or into the error the Run fails
+ * with. Split out of `streamCodexProcess` so the replay runner reaches the same
+ * words for the same events: a replayed failure that reads differently from the
+ * live one it was recorded from would make the replay useless as a demo.
+ */
+export function completeCodexRun(
+  parsed: ParsedEvents,
+  exitCode: number,
+  stderr: string,
+  label = "Codex",
+): RunnerResult {
   if (exitCode !== 0) {
     throw new Error(
       label + " exited with code " + exitCode + ": " + codexExitDetail(parsed, stderr),

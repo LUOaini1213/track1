@@ -42,7 +42,13 @@ const envSchema = z.object({
     .default(3_500_000),
   CODEX_TIMEOUT_MS: z.coerce.number().int().min(1_000).default(600_000),
   CODEX_MAX_OUTPUT_BYTES: z.coerce.number().int().min(65_536).default(2_097_152),
-  RUNTIME_PROVIDER: z.enum(["local-process", "container"]).default("local-process"),
+  RUNTIME_PROVIDER: z
+    .enum(["local-process", "container", "replay"])
+    .default("local-process"),
+  // `replay` needs neither a key nor Codex: recorded Codex events are fed
+  // through the real parser, TraceCollector and policy gate. See replay-runner.ts.
+  REPLAY_FIXTURE_DIR: z.string().optional(),
+  REPLAY_SPEED: z.coerce.number().positive().default(1),
   CONTAINER_ENGINE: z.string().min(1).default("docker"),
   CONTAINER_RUNTIME_IMAGE: z.string().min(1).default("volc-agent-runtime:local"),
   CONTAINER_CPU_LIMIT: z.coerce.number().positive().default(2),
@@ -134,6 +140,10 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
     codexTimeoutMs: env.CODEX_TIMEOUT_MS,
     codexMaxOutputBytes: env.CODEX_MAX_OUTPUT_BYTES,
     runtimeProvider: env.RUNTIME_PROVIDER,
+    replayFixtureDir: env.REPLAY_FIXTURE_DIR
+      ? path.resolve(env.REPLAY_FIXTURE_DIR)
+      : null,
+    replaySpeed: env.REPLAY_SPEED,
     containerEngine: env.CONTAINER_ENGINE,
     containerRuntimeImage: env.CONTAINER_RUNTIME_IMAGE,
     containerCpuLimit: env.CONTAINER_CPU_LIMIT,
@@ -147,6 +157,11 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
     arkBaseUrl: env.ARK_BASE_URL.replace(/\/+$/, ""),
     nodeEnv: env.NODE_ENV,
   };
+}
+
+/** Recorded Codex events stand in for the model; Ark need not be configured. */
+export function isReplayRuntime(config: AppConfig): boolean {
+  return config.runtimeProvider === "replay";
 }
 
 export function isArkConfigured(config: AppConfig): boolean {

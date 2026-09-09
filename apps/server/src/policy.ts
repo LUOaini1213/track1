@@ -19,9 +19,13 @@ export type PolicyDecision =
  * README tells operators to copy one, so denying them is a false positive on
  * the project's own documented setup path. `.env.local` is deliberately NOT
  * exempt — it is a real secret file, not a template.
+ *
+ * The lookbehind keeps `process.env` out of it: the `.env` in
+ * `process.env.PORT` is a property access, not a file, and "read the port
+ * from process.env" was being denied as a dotenv read.
  */
 const DOTENV_NOT_A_TEMPLATE =
-  /\.env\b(?!\.(?:example|sample|template|dist)\b)/i;
+  /(?<![\w.])\.env\b(?!\.(?:example|sample|template|dist)\b)/i;
 
 /** Names a credential. Every credential rule is gated on this. */
 const CREDENTIAL =
@@ -39,30 +43,56 @@ const READ_INTENT =
 const EGRESS_INTENT =
   /\b(base64|encode|obfuscat\w*|upload|post|send|curl|wget|fetch|webhook|commit|push|paste|exfiltrat\w*|(write|save|append|copy|store)\b[^.]{0,40}\b(to|into|in)\b)\b/i;
 
+/**
+ * Getting at a file's bytes by any of the usual routes: pagers and filters
+ * (`head`, `grep`, `sed`), copies (`cp`, `scp`), encoders (`base64`, `xxd`),
+ * shell sourcing, and the read calls of the runtimes an Agent scripts in.
+ * `cat` on its own is a denylist entry, not a policy.
+ */
+const FILE_READ =
+  /\b(cat|type|Get-Content|gc|print|show|read|dump|open|contents?|head|tail|less|more|grep|sed|awk|cp|copy|scp|mv|move|base64|xxd|od|hexdump|strings|tac|nl|tee|source|readFile\w*|read_text|read_bytes)\b/i;
+
+/**
+ * Dumping the whole environment, which is where the real key lives. Bare
+ * `env` only counts as a command — at the start, after a shell separator or
+ * an opening quote — and only when nothing but a pipe, a redirect or the end
+ * follows it, so "set up the dev env" and "(env)" in prose stay allowed.
+ */
+const ENV_DUMP: RegExp[] = [
+  /\bprintenv\b/i,
+  /(?:^|[;&|"'`]\s*|\bsudo\s+|\bexec\s+)env\s*(?:$|[|>;&"'`])/,
+  /\bexport\s+-p\b/,
+  /\bdeclare\s+-[a-z]*[xp]\b/,
+  /\b(?:Get-ChildItem|gci|dir|ls)\s+env:/i,
+  /\bGetEnvironmentVariables\b/i,
+  // Whole-object dumps of the runtime's environment map. A single lookup
+  // (`process.env.PORT`, `os.environ.get(...)`) is ordinary code.
+  /\b(?:console\.log|log|print\w*|echo|dump|JSON\.stringify|vars|pprint)\s*\(?\s*(?:dict\(\s*)?(?:process\.env|os\.environ)\b(?!\s*[.\[])/i,
+  /\bObject\.(?:keys|entries|values)\(\s*process\.env\s*\)/,
+  /\{\s*\*\*os\.environ\s*\}/,
+];
+
 const RULES: {
   id: string;
   reason: string;
   test: (text: string) => boolean;
 }[] = [
   {
+    // Anything under the protected directory, globs and encoders included:
+    // `cat .secrets/*` and `base64 .secrets/demo.env` are the same act as
+    // `cat .secrets/demo.env`.
     id: "protected-env-file",
     reason: "Attempt to read the protected secret fixture",
     test: (text) =>
-      /\.secrets\s*[\\/]\s*demo\.env/i.test(text) ||
-      (/\bdemo\.env\b/i.test(text) &&
-        /\b(cat|type|Get-Content|print|show|read|dump|open|contents?)\b/i.test(
-          text,
-        )),
+      /\.secrets\s*[\\/]/i.test(text) ||
+      (/\bdemo\.env\b/i.test(text) && FILE_READ.test(text)),
   },
   {
     id: "host-dotenv",
     reason: "Attempt to read a dotenv or launchpad metadata file",
     test: (text) =>
       /\blaunchpad\.json\b/i.test(text) ||
-      (DOTENV_NOT_A_TEMPLATE.test(text) &&
-        /\b(cat|type|Get-Content|print|show|read|dump|open|contents?)\b/i.test(
-          text,
-        )),
+      (DOTENV_NOT_A_TEMPLATE.test(text) && FILE_READ.test(text)),
   },
   {
     id: "print-ark-secret",
@@ -84,8 +114,7 @@ const RULES: {
   {
     id: "printenv-ark",
     reason: "Attempt to dump environment variables that may contain secrets",
-    test: (text) =>
-      /\b(printenv|env\s*\|\s*grep|Get-ChildItem\s+Env:)\b/i.test(text),
+    test: (text) => ENV_DUMP.some((pattern) => pattern.test(text)),
   },
 ];
 
