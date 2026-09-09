@@ -1,0 +1,49 @@
+name: ci
+
+# 全离线：没有模型 key、没有 Codex 安装、没有容器引擎、没有网络请求。
+#
+# 这一点是设计出来的，不是碰巧：
+#   - `codex-runner.live.test.ts` 跑的是 `fixtures/fake-codex.js`，不是真的 Codex；
+#   - `replay-runner.test.ts` 用 `RUNTIME_PROVIDER=replay` 把录制的 Codex 事件
+#     喂进真实的解析 / 追踪 / 脱敏 / 策略链路，所以整条控制面能在无 key 下被验证；
+#   - 容器那条路径只测不需要引擎的部分。
+#
+# 为什么要有这个文件：这个仓有 20 个测试文件 / 150 个用例，但在此之前它们只有
+# 「本机跑过」这一句话背书。同一棵树的其他仓都有绿徽章，只有这里没有——
+# 而「本机跑过但没在 CI 上跑过」和「没跑过」对读者是一回事。
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        # 22 是 package.json engines 声明的下限，24 是开发用的版本。
+        # 两个都跑，是因为声明了下限就得证明下限真的能跑。
+        node-version: ["22", "24"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+      - name: Install
+        # `npm ci` 而不是 `npm install`：锁文件说什么就装什么，
+        # 否则 CI 装到的依赖和本机不是一套，红了也说明不了问题。
+        run: npm ci
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Tests
+        run: npm test
+      - name: Build
+        run: npm run build
+      - name: Smoke — start the built artefact and ask it one question
+        # 前三步都绿过、而生产入口起不来的事发生过一次：contract 包导出的是
+        # TypeScript 源码，tsc / vitest / Vite 各自都能解析，只有真正 `node
+        # dist/index.js` 才暴露。所以这一步不能省。
+        run: npm run smoke

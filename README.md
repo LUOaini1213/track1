@@ -1,5 +1,7 @@
 # Volc Agent Launchpad — Trace Plane
 
+[![ci](https://github.com/LUOaini1213/track1/actions/workflows/ci.yml/badge.svg)](https://github.com/LUOaini1213/track1/actions/workflows/ci.yml)
+
 > **TikTok TechJam 2026 result: this entry did not place.** The competition has
 > concluded and this submission was not among those selected. Everything below is
 > what was built and measured — each number traces to a committed artifact, and
