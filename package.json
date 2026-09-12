@@ -16,10 +16,11 @@
     "build": "npm run build -w @launchpad/contract && npm run build -w @launchpad/web && npm run build -w @launchpad/server",
     "typecheck": "npm run build -w @launchpad/contract && npm run typecheck --workspaces --if-present",
     "test": "npm run test -w @launchpad/contract && npm run test -w @launchpad/server && npm run test -w @launchpad/web",
-    "check": "npm run typecheck && npm run test && npm run build && npm run smoke",
+    "check": "npm run typecheck && npm run test && npm run build && npm run smoke && npm run smoke:replay",
     "poc": "./scripts/start-local-poc.sh",
     "start": "npm run start -w @launchpad/server",
-    "smoke": "node scripts/smoke-start.mjs"
+    "smoke": "node scripts/smoke-start.mjs",
+    "smoke:replay": "node scripts/smoke-replay.mjs"
   },
   "devDependencies": {
     "concurrently": "^9.2.1",

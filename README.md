@@ -14,6 +14,25 @@
 Devpost paste pack (English description, demo script, submit clicks): [docs/SUBMISSION.md](docs/SUBMISSION.md).
 One-page architecture: [docs/TRACE_PLANE.md](docs/TRACE_PLANE.md).
 
+## Try the trace UI without an API key
+
+Requirements: Node.js 22+ and npm 10+. From a fresh clone:
+
+```bash
+npm ci
+npm run demo
+```
+
+Open <http://localhost:5173>. This runs the real control plane, storage and trace
+waterfall with committed replay fixtures as its event source. It needs neither
+Codex CLI nor Docker nor a model key. Replay demonstrates successful, failed and
+denied example runs; each fixture records its provenance. It does not generate
+new code with a live model.
+
+For the complete local verification (typecheck, tests, production build and HTTP
+startup smoke), run `npm run check`. The live-model and container paths below
+have their own additional requirements. Stop the demo with Ctrl+C.
+
 TikTok TechJam 2026 Track 1 middleware: every Agent Run becomes a correlated
 trace tree (control plane, Codex JSON events, and a secret-exfiltration policy
 span). The browser Playground, Agent CRUD, Codex Runtime, and ECS path come
