@@ -77,7 +77,8 @@ export function spanDepths(spans: TraceSpan[]): Map<string, number> {
 /**
  * A failure marks every span on the path to it — `run.execute` and
  * `runtime.spawn` are flagged too, but they are wrappers with no diagnostic
- * attributes. Pick the innermost problem span that actually explains the
+ * attributes, and the steps that were merely mid-flight when the Run died get
+ * flagged as well. Pick the innermost problem span that actually explains the
  * failure, so "Open failing step" lands on the denied policy rule or the
  * command that exited non-zero rather than on an empty envelope.
  */
@@ -91,13 +92,31 @@ export function problemSpans(spans: TraceSpan[]): TraceSpan[] {
   const depths = spanDepths(spans);
   const order = new Map(spans.map((span, index) => [span.spanId, index]));
   return [...problems].sort((left, right) => {
-    // 1. A span that can explain the failure beats one that cannot.
+    // 1. A span that failed on its own beats one that was merely still open
+    //    when the Run ended. `endOpenSpans` closes those with a placeholder
+    //    errorText ("Run ended before this step completed"), and rule 2 below
+    //    cannot tell that placeholder apart from a real exit code — so this
+    //    rule has to come first. Without it the `chat` span Codex left open
+    //    outranked the command that actually exited 1: it tied on diagnostics,
+    //    tied on depth (siblings under `runtime.spawn`), and won "earliest
+    //    first" because it opened 40ms in while the command failed at 1600ms.
+    //    "Open failing step" then landed on a sentence that says nothing, on
+    //    both failure fixtures — including the denied-policy Run the demo
+    //    script is built around.
+    //    Compare booleans, not the raw attribute: `Number(undefined)` is NaN,
+    //    and a comparator that can return NaN is no longer a total order, so
+    //    the remaining rules would silently stop running.
+    const unterminated =
+      (left.attributes.unterminated === true ? 1 : 0) -
+      (right.attributes.unterminated === true ? 1 : 0);
+    if (unterminated !== 0) return unterminated;
+    // 2. A span that can explain the failure beats one that cannot.
     const explains = Number(hasDiagnostics(right)) - Number(hasDiagnostics(left));
     if (explains !== 0) return explains;
-    // 2. Innermost first — the wrappers on the path carry no detail.
+    // 3. Innermost first — the wrappers on the path carry no detail.
     const depth = (depths.get(right.spanId) ?? 0) - (depths.get(left.spanId) ?? 0);
     if (depth !== 0) return depth;
-    // 3. Earliest first. When one Run fails several times the first failure is
+    // 4. Earliest first. When one Run fails several times the first failure is
     //    usually the cause and the rest are cascades, so it is the better
     //    landing point. This previously fell out of sort stability by accident.
     return (order.get(left.spanId) ?? 0) - (order.get(right.spanId) ?? 0);

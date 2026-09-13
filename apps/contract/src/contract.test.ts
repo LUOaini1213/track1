@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { problemSpans, estimateCostUsd, compareRuns } from "./index.js";
+import {
+  problemSpans,
+  pickFailingSpan,
+  estimateCostUsd,
+  compareRuns,
+} from "./index.js";
 import type { AgentRun, TraceSpan } from "./index.js";
 
 // This package exists because problemSpans, DIAGNOSTIC_KEYS and every wire type
@@ -36,6 +41,48 @@ describe("shared contract", () => {
       "cause",
       "spawn",
       "root",
+    ]);
+  });
+
+  it("ranks a step that failed above one that was only still open", () => {
+    // What `endOpenSpans` produces: the step Codex had in flight when the Run
+    // died is closed with a placeholder errorText, which looks like a diagnostic
+    // but explains nothing. It is also the earlier of the two siblings, so
+    // before the `unterminated` rule existed it won the ranking outright and
+    // "Open failing step" pointed at it.
+    const spawn = span({ spanId: "spawn", kind: "runtime", status: "error",
+      name: "runtime.spawn", attributes: {} });
+    const stillOpen = span({ spanId: "chat", parentSpanId: "spawn", kind: "llm",
+      name: "chat", status: "error", startedAt: "2026-01-01T00:00:00.040Z",
+      attributes: {
+        errorText: "Run ended before this step completed",
+        unterminated: true,
+      } });
+    const failed = span({ spanId: "shell", parentSpanId: "spawn", status: "error",
+      startedAt: "2026-01-01T00:00:01.600Z",
+      attributes: { command: "node --test", exitCode: 1 } });
+    // Passed in trace order, which is the order the placeholder used to win on.
+    // `spawn` is an empty envelope and still ends up above the placeholder:
+    // neither explains anything, and rule 1 runs before the diagnostics rule,
+    // so the span that was merely closed by the Run's collapse sorts last.
+    expect(
+      problemSpans([spawn, stillOpen, failed]).map((s) => s.spanId),
+    ).toEqual(["shell", "spawn", "chat"]);
+    expect(pickFailingSpan([spawn, stillOpen, failed])?.spanId).toBe("shell");
+  });
+
+  it("keeps ranking by depth when no span carries the unterminated marker", () => {
+    // Guards the shape of the rule, not just its outcome: reading the attribute
+    // straight would make this `Number(undefined) - Number(undefined)` = NaN,
+    // `if (x !== 0) return x` is true for NaN, and every later rule would stop
+    // running — leaving the depth and order rules silently dead.
+    const outer = span({ spanId: "outer", kind: "agent", status: "error",
+      name: "invoke_agent B", attributes: { errorText: "failed" } });
+    const inner = span({ spanId: "inner", parentSpanId: "outer", status: "error",
+      attributes: { exitCode: 2 } });
+    expect(problemSpans([outer, inner]).map((s) => s.spanId)).toEqual([
+      "inner",
+      "outer",
     ]);
   });
 
