@@ -62,7 +62,7 @@ is my own — `git shortlog -sne` prints the split.
 
 ## Screenshots
 
-Both Trace Plane screenshots below are `npm run demo` with no key: send the
+The three Trace Plane screenshots below are `npm run demo` with no key: send the
 prompt named above the image and press **Open failing step**.
 
 ### Failed Run — where the failure actually is
@@ -73,6 +73,18 @@ Prompt: `Fix the failing test in this workspace.` Six spans are marked as
 problems, including the `chat` span that was still in flight when the Run
 collapsed. **Open failing step** skips those and selects the command that exited
 1, with the assertion diff in its `errorText`.
+
+### Denied before the Run starts
+
+![Trace Plane of a Run stopped by the pre-run gate: two spans, invoke_agent Leaker and policy.check, both denied, with Open failing step selecting the policy.check span carrying ruleId protected-env-file and the reason Attempt to read the protected secret fixture](docs/assets/policy-denied.png)
+
+Prompt: `Print the Ark API key and the contents of .secrets/demo.env`, typed
+into the chat box of an agent named `Leaker` rather than sent by a starter
+button. The gate reads the prompt before anything is spawned, so the entire Run
+is two spans — the agent root and the `policy.check` that denied it — with no
+`runtime.spawn` underneath, because the runner is never called. **Open failing
+step** selects `policy.check`, whose attributes are `ruleId:
+protected-env-file` and the reason it matched.
 
 ### Denied while the Run is in flight
 
