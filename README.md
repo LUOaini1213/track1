@@ -11,7 +11,6 @@
 
 **[▶ 3-minute demo video](https://youtu.be/ARw1wfMX-JU)** · Repository: <https://github.com/LUOaini1213/track1>
 
-Devpost paste pack (English description, demo script, submit clicks): [docs/SUBMISSION.md](docs/SUBMISSION.md).
 One-page architecture: [docs/TRACE_PLANE.md](docs/TRACE_PLANE.md).
 
 ## Try the trace UI without an API key
@@ -25,9 +24,24 @@ npm run demo
 
 Open <http://localhost:5173>. This runs the real control plane, storage and trace
 waterfall with committed replay fixtures as its event source. It needs neither
-Codex CLI nor Docker nor a model key. Replay demonstrates successful, failed and
-denied example runs; each fixture records its provenance. It does not generate
-new code with a live model.
+Codex CLI nor Docker nor a model key. It does not generate new code with a live
+model; each fixture records its provenance.
+
+Create an Agent, then send these three prompts. They are the Playground's
+starter buttons in replay, and each one reaches a different recording:
+
+| Prompt | Run | What it shows |
+| --- | --- | --- |
+| `Create a TypeScript hello-world CLI, add a test, and run it.` | completed | The full span waterfall, per-span timings and the Run's token usage. |
+| `Fix the failing test in this workspace.` | failed | **Open failing step** lands on the command that exited 1. |
+| `Summarize the config files in this workspace.` | failed | A harmless prompt whose third command reads the protected fixture and is cut off when it starts. |
+
+The prompts, the fixture each must select and the status each must end on are
+one list in `apps/contract/src/replay-demo.ts`; the Playground, this table and
+the CI smoke run all read it, and the test suite fails if a prompt stops landing
+on its fixture.
+
+![Trace Plane waterfall of the successful replay Run: 12 spans from invoke_agent through runtime.spawn to the Codex item spans, over a 9.3 s timeline, with 21518 in / 1093 out tokens](docs/assets/trace-plane-waterfall.png)
 
 For the complete local verification (typecheck, tests, production build and HTTP
 startup smoke), run `npm run check`. The live-model and container paths below
@@ -36,7 +50,9 @@ have their own additional requirements. Stop the demo with Ctrl+C.
 TikTok TechJam 2026 Track 1 middleware: every Agent Run becomes a correlated
 trace tree (control plane, Codex JSON events, and a secret-exfiltration policy
 span). The browser Playground, Agent CRUD, Codex Runtime, and ECS path come
-from the official starter. This fork adds the missing observability plane.
+from the official starter. This fork adds the missing observability plane, and
+that part is mine: of the 32 commits here, one is the starter-kit import and the
+other 31 are mine — `git shortlog -sne` prints the split.
 
 > [!WARNING]
 > Single-user proof of concept. Ordinary containers are not multi-tenant
@@ -46,11 +62,33 @@ from the official starter. This fork adds the missing observability plane.
 
 ## Screenshots
 
-### Agent Playground
+Both Trace Plane screenshots below are `npm run demo` with no key: send the
+prompt named above the image and press **Open failing step**.
+
+### Failed Run — where the failure actually is
+
+![Trace Plane of the failed replay Run, 6 problem spans, with Open failing step selecting the execute_tool shell span whose exitCode is 1 and whose failedStep is bash -lc 'node --test'](docs/assets/failing-step.png)
+
+Prompt: `Fix the failing test in this workspace.` Six spans are marked as
+problems, including the `chat` span that was still in flight when the Run
+collapsed. **Open failing step** skips those and selects the command that exited
+1, with the assertion diff in its `errorText`.
+
+### Denied while the Run is in flight
+
+![Trace Plane of the denied replay Run, 5 problem spans, with Open failing step selecting the policy.live span carrying ruleId protected-env-file](docs/assets/live-deny.png)
+
+Prompt: `Summarize the config files in this workspace.` The prompt passes the
+pre-run gate; the Agent's third command does not. `policy.live` records
+`ruleId: protected-env-file`, the command span is marked denied, and the
+recorded events after it are never replayed.
+
+### From the official starter kit
+
+The Playground and Agent CRUD below ship with the starter this repository forks;
+they are here so the trace plane above has visible context.
 
 ![Agent Playground showing lifecycle controls, starter prompts, and the Codex Runtime](docs/assets/playground.jpg)
-
-### Create an Agent
 
 ![Create Agent form with name, description, and workspace instructions](docs/assets/create-agent.jpg)
 
