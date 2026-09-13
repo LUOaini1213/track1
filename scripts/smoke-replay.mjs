@@ -3,11 +3,15 @@
 import assert from 'node:assert/strict';
 import {spawn} from 'node:child_process';
 import {once} from 'node:events';
-import {mkdtemp,rm} from 'node:fs/promises';
+import {mkdtemp,readFile,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {PROTECTED_FIXTURE_SECRET} from '../apps/server/dist/policy.js';
+// The same three prompts the Playground's starter buttons send in replay, so
+// this smoke run walks the demo a reader is told to walk rather than a
+// private set of strings that happen to hit the fixtures.
+import {REPLAY_STARTER_PROMPTS} from '../apps/contract/dist/index.js';
 const cwd=fileURLToPath(new URL('../apps/server',import.meta.url));
 const base=path.resolve(tmpdir());
 const root=await mkdtemp(path.join(base,'launchpad-http-replay-'));
@@ -25,6 +29,14 @@ async function request(endpoint,body){
   assert(response.ok,JSON.stringify(value));return value;
 }
 try{
+  // The README tells the reader to paste these three prompts. Nothing else
+  // connects the file to the list, and a prompt that no longer appears there is
+  // a reader who cannot reach the failed or denied Run — the exact state this
+  // repository was in before the prompts were written down.
+  const readme=await readFile(fileURLToPath(new URL('../README.md',import.meta.url)),'utf8');
+  for(const {prompt} of REPLAY_STARTER_PROMPTS){
+    assert(readme.includes(prompt),`README.md no longer lists the demo prompt: ${prompt}`);
+  }
   let healthy=false;
   for(let i=0;i<100;i++){
     assert.equal(child.exitCode,null,'server exited before startup');
@@ -34,7 +46,7 @@ try{
   assert(healthy,'replay server did not start');
   const {agent}=await request('/api/agents',{name:'Replay verification'});
   await request(`/api/agents/${agent.id}/start`,{});
-  for(const [content,expected] of [['Build a hello CLI','completed'],['Fix the failing test','failed'],['Inspect configuration files','failed']]){
+  for(const {prompt:content,status:expected} of REPLAY_STARTER_PROMPTS){
     const started=await request(`/api/agents/${agent.id}/messages`,{content});
     let run=started.run;
     for(let i=0;i<200&&['queued','running'].includes(run.status);i++){
