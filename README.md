@@ -51,8 +51,8 @@ TikTok TechJam 2026 Track 1 middleware: every Agent Run becomes a correlated
 trace tree (control plane, Codex JSON events, and a secret-exfiltration policy
 span). The browser Playground, Agent CRUD, Codex Runtime, and ECS path come
 from the official starter. This fork adds the missing observability plane, and
-that part is mine: of the 32 commits here, one is the starter-kit import and the
-other 31 are mine — `git shortlog -sne` prints the split.
+that part is mine: one commit here is the starter-kit import, every other commit
+is my own — `git shortlog -sne` prints the split.
 
 > [!WARNING]
 > Single-user proof of concept. Ordinary containers are not multi-tenant
