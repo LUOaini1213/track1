@@ -65,7 +65,7 @@ describe("delivery refresh after a Run completes", () => {
     await vi.advanceTimersByTimeAsync(1);
     const html = renderToStaticMarkup(<DeliveryStatus delivery={shown} refreshError={null} />);
     expect(html).toContain("Delivered"); expect(html).toContain("12 accepted");
-    expect(fetch).toHaveBeenCalledWith("/api/runs/run-a/trace", expect.any(Object));
+    expect(fetch).toHaveBeenCalledWith("/api/runs/run-a/delivery", expect.any(Object));
     await vi.advanceTimersByTimeAsync(30000); expect(fetch).toHaveBeenCalledTimes(1); expect(errors).toEqual([null]); stop();
   });
 

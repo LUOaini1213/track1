@@ -153,6 +153,11 @@ export async function createApp(
     return service.getTrace(id);
   });
 
+  app.get("/api/runs/:id/delivery", async (request) => {
+    const { id } = runIdParams.parse(request.params);
+    return { delivery: await service.getRunDelivery(id) };
+  });
+
   // Registered BEFORE the static plugin. `await app.register(fastifyStatic)`
   // boots that plugin into its own context; a setErrorHandler installed after it
   // does not govern the routes, so in production every message below degraded to

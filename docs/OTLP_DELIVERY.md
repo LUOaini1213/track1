@@ -44,6 +44,10 @@ After execution completes, delivery refreshes every two seconds while pending,
 every ten seconds while paused, and every five seconds when recovery is needed.
 Settled outcomes stop polling. Selection changes and unmount ignore stale replies;
 a temporary API failure preserves the last observation with a refresh message.
+Refreshes use the compact `GET /api/runs/:id/delivery` response, which contains
+only the safe delivery object. Known queue records are read from memory without
+span-file I/O. A missing terminal record checks local spans to establish whether
+startup recovery is possible, but does not return the span tree to the poller.
 
 | State | Meaning |
 | --- | --- |

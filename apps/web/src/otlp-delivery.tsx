@@ -53,7 +53,7 @@ export function watchRunDelivery(runId: string, initial: RunOtlpDelivery | null,
   const schedule = (delay: number) => { timer = setTimeout(() => { void refresh(); }, delay); };
   const refresh = async () => {
     try {
-      const trace = await api.trace(runId);
+      const trace = await api.runDelivery(runId);
       if (cancelled) return;
       onUpdate(trace.delivery); onError(null);
       const delay = pollDelay(trace.delivery);

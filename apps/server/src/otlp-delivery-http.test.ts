@@ -44,7 +44,14 @@ async function open(config: AppConfig, executor = runner) {
   const service = new AgentService(config, new JsonStore(path.join(config.dataDirectory, "launchpad.json")),
     new WorkspaceManager(config.workspaceRoot), executor); services.push(service); await service.initialize();
   const app = await createApp(config, service); apps.push(app);
-  return { app, service, trace: async (id: string) => {
+  return { app, service, delivery: async (id: string) => {
+    const response = await app.inject({ method: "GET", url: `/api/runs/${id}/delivery` });
+    expect(response.statusCode).toBe(200);
+    const result = response.json<{ delivery: RunOtlpDelivery }>();
+    expect(Object.keys(result)).toEqual(["delivery"]);
+    expect(response.body.length).toBeLessThan(1000);
+    return result.delivery;
+  }, trace: async (id: string) => {
     const response = await app.inject({ method: "GET", url: `/api/runs/${id}/trace` });
     expect(response.statusCode).toBe(200);
     return response.json<{ run: { status: string; output: string }; spans: unknown[]; delivery: RunOtlpDelivery }>();
@@ -88,10 +95,11 @@ describe("per-Run OTLP delivery through the real trace API", () => {
     ["delivered", 200, '{"partialSuccess":{"rejectedSpans":"0","errorMessage":"collector-private-error"}}'],
   ] as const)("exposes %s counts without collector URLs, credentials or response text", async (state, status, body) => {
     const collector = await target((response) => { response.writeHead(status); response.end(body); });
-    const config = await configuration(collector.endpoint), { service, trace } = await open(config);
+    const config = await configuration(collector.endpoint), { service, trace, delivery } = await open(config);
     const id = await execute(service);
     await expect.poll(async () => (await trace(id)).delivery.state).toBe(state);
     const result = await trace(id), serialized = JSON.stringify(result.delivery);
+    expect(await delivery(id)).toEqual(result.delivery);
     expect(result.run).toMatchObject({ status: "completed", output: "Task complete" });
     expect(serialized).not.toContain(collector.endpoint); expect(serialized).not.toContain("delivery-private-header");
     expect(serialized).not.toContain("collector-private-error");
@@ -106,6 +114,7 @@ describe("per-Run OTLP delivery through the real trace API", () => {
     await service.shutdown(); expect(collector.requests()).toBe(1);
     const reopened = await open(config);
     expect((await reopened.trace(id)).delivery).toEqual(result.delivery);
+    expect(await reopened.delivery(id)).toEqual(result.delivery);
     expect(collector.requests()).toBe(1);
   });
 
@@ -122,19 +131,38 @@ describe("per-Run OTLP delivery through the real trace API", () => {
     await changed.service.shutdown();
     const disabled = await open({ ...config, otlpEndpoint: "" });
     expect((await disabled.trace(id)).delivery).toMatchObject({ state: "disabled", acceptedSpans: 0, pendingBatches: 0 });
+    expect(await disabled.delivery(id)).toEqual((await disabled.trace(id)).delivery);
     expect(second.requests()).toBe(0);
   });
 
   it("reports a recoverable missing record and distinguishes missing local spans", async () => {
     const collector = await target((response) => { response.writeHead(503); response.end(); });
-    const config = await configuration(collector.endpoint), { service, trace } = await open(config);
+    const config = await configuration(collector.endpoint), { service, trace, delivery } = await open(config);
     const id = await execute(service);
     await expect.poll(async () => (await trace(id)).delivery.state).toBe("pending");
     const outbox = (service as unknown as { outbox: OtlpOutbox }).outbox;
     await outbox.forget([id]);
     expect((await trace(id)).delivery).toMatchObject({ state: "recovery_needed", recoveryPossible: true });
+    expect(await delivery(id)).toEqual((await trace(id)).delivery);
     await service.shutdown();
     await rm(path.join(config.dataDirectory, "spans", id + ".json"));
     expect((await trace(id)).delivery).toMatchObject({ state: "unavailable", recoveryPossible: false });
+    expect(await delivery(id)).toEqual((await trace(id)).delivery);
+  });
+
+  it("keeps compact refresh independent of span file I/O and rejects unknown or unauthenticated Runs", async () => {
+    const collector = await target(accepted), config = await configuration(collector.endpoint);
+    const { app, service, delivery } = await open(config), id = await execute(service);
+    await expect.poll(async () => (await delivery(id)).state).toBe("delivered");
+    const spans = (service as unknown as { spanStore: { read: (id: string) => Promise<unknown[]> } }).spanStore;
+    spans.read = async () => { throw new Error("compact endpoint must not read acknowledged spans"); };
+    expect((await delivery(id)).acceptedSpans).toBeGreaterThan(0);
+    expect((await app.inject({ method: "GET", url: "/api/runs/not-a-uuid/delivery" })).statusCode).toBe(400);
+    const missing = await app.inject({ method: "GET", url: "/api/runs/00000000-0000-4000-8000-000000000099/delivery" });
+    expect(missing.statusCode).toBe(404);
+    const authenticated = await createApp({ ...config, authToken: "delivery-api-shared-token" }, service); apps.push(authenticated);
+    expect((await authenticated.inject({ method: "GET", url: `/api/runs/${id}/delivery` })).statusCode).toBe(401);
+    expect((await authenticated.inject({ method: "GET", url: `/api/runs/${id}/delivery`,
+      headers: { authorization: "Bearer delivery-api-shared-token" } })).statusCode).toBe(200);
   });
 });

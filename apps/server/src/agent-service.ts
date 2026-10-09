@@ -393,6 +393,18 @@ export class AgentService {
     await this.outbox.shutdown();
   }
 
+  /** Refresh delivery without rereading and returning a potentially large span
+   * tree. Only a missing terminal record needs local spans for recovery checks. */
+  async getRunDelivery(runId: string): Promise<RunOtlpDelivery> {
+    const run = this.getRun(runId), active = ["queued", "running"].includes(run.status);
+    if (!this.config.otlpEndpoint || this.outbox.has(runId) || active) {
+      return this.outbox.runStatus(runId, active, false);
+    }
+    const spans = await this.spanStore.read(runId);
+    return this.outbox.runStatus(runId, active,
+      spans.length > 0 && spans.every((span) => span.endedAt !== null) && exportableSpans(spans).length > 0);
+  }
+
   getRuns(agentId: string): AgentRun[] {
     this.getAgent(agentId);
     return this.store
