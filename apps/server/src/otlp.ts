@@ -19,7 +19,8 @@ import type { SpanKind, TraceSpan } from "./types.js";
  * OTLP wants a 16-byte trace id and an 8-byte span id, hex encoded. Ours are
  * UUIDs, whose hyphens and version bits do not fit that shape, so hash them.
  * SHA-256 truncated is deterministic and collision-resistant enough here: the
- * same Run always exports under the same ids, and re-exporting is idempotent.
+ * same Run always exports under the same ids. A receiver can deduplicate those
+ * ids, but OTLP itself does not guarantee idempotent ingestion.
  */
 function toTraceId(value: string): string {
   return createHash("sha256").update(value).digest("hex").slice(0, 32);
@@ -56,7 +57,7 @@ export function batchSpans(spans: TraceSpan[], maxBytes: number): TraceSpan[][] 
   for (const span of spans) {
     // Measuring the encoded span is the honest unit; JSON.stringify of the raw
     // span is within a few percent of it and far cheaper than encoding twice.
-    const cost = JSON.stringify(span).length + 256;
+    const cost = Buffer.byteLength(JSON.stringify(span)) + 256;
     if (current.length > 0 && size + cost > maxBytes) {
       batches.push(current);
       current = [];
@@ -153,6 +154,93 @@ export interface OtlpExportResult {
   batches: number;
 }
 
+export class OtlpDeliveryError extends Error {
+  constructor(message: string, readonly retryAfterMs = 0, readonly retryable = true, readonly deliveryUnknown = false) {
+    super(message);
+  }
+}
+
+export interface OtlpBatchResult { partial: boolean; rejectedSpans: number; warning: boolean }
+
+/** Bound received bytes after fetch decompression. Oversized/invalid replies are
+ * non-retryable, with acceptance unknown, rather than an unbounded read. */
+async function responseText(response: Response, limit: number): Promise<string> {
+  if (!response.body) return typeof response.text === "function" ? await response.text() : "";
+  const reader = response.body.getReader(), chunks: Uint8Array[] = [];
+  let received = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      received += value.byteLength;
+      if (received > limit) {
+        await reader.cancel();
+        throw new OtlpDeliveryError("OTLP response exceeded byte limit", 0, false, true);
+      }
+      chunks.push(value);
+    }
+    return Buffer.concat(chunks).toString("utf8");
+  } finally { reader.releaseLock(); }
+}
+
+/** OTLP/HTTP partial_success is terminal for that batch: MUST NOT retry it. */
+export async function postOtlpBatch(
+  config: AppConfig,
+  endpoint: string,
+  body: string,
+  shutdownSignal?: AbortSignal,
+): Promise<OtlpBatchResult> {
+  const signal = shutdownSignal
+    ? AbortSignal.any([AbortSignal.timeout(config.otlpTimeoutMs), shutdownSignal])
+    : AbortSignal.timeout(config.otlpTimeoutMs);
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: { "content-type": "application/json", ...config.otlpHeaders },
+    body,
+    signal,
+    redirect: "error",
+  });
+  const retryAfter = response.headers?.get("retry-after");
+  const seconds = retryAfter ? Number(retryAfter) : NaN;
+  const retryAfterMs = retryAfter
+    ? Math.max(0, Number.isFinite(seconds) ? seconds * 1_000 : Date.parse(retryAfter) - Date.now())
+    : 0;
+  if (!response.ok) {
+    // Response bodies can contain submitted content or credentials. Do not log them.
+    await response.body?.cancel().catch(() => undefined);
+    throw new OtlpDeliveryError("OTLP endpoint answered " + response.status, retryAfterMs,
+      [429, 502, 503, 504].includes(response.status));
+  }
+  // Empty bodies are accepted by several collectors. A nonempty response must
+  // be valid JSON; malformed or partial replies leave the batch pending.
+  const reply = await responseText(response, config.otlpMaxResponseBytes);
+  if (reply.trim()) {
+    let result: { partialSuccess?: unknown; partial_success?: unknown };
+    try {
+      result = JSON.parse(reply);
+    } catch {
+      throw new OtlpDeliveryError("OTLP endpoint returned invalid JSON", 0, false, true);
+    }
+    if (!result || typeof result !== "object" || Array.isArray(result)) {
+      throw new OtlpDeliveryError("OTLP endpoint returned invalid JSON response", 0, false, true);
+    }
+    const partial = result.partialSuccess ?? result.partial_success;
+    if (partial === undefined) return { partial: false, rejectedSpans: 0, warning: false };
+    if (!partial || typeof partial !== "object" || Array.isArray(partial)) {
+      throw new OtlpDeliveryError("OTLP endpoint returned invalid partial success", 0, false, true);
+    }
+    const fields = partial as { rejectedSpans?: unknown; rejected_spans?: unknown; errorMessage?: unknown; error_message?: unknown };
+    const rawRejected = fields.rejectedSpans ?? fields.rejected_spans ?? 0;
+    const rejected = Number(rawRejected);
+    if (!(typeof rawRejected === "number" || typeof rawRejected === "string" && /^\d+$/.test(rawRejected)) || !Number.isSafeInteger(rejected) || rejected < 0) {
+      throw new OtlpDeliveryError("OTLP endpoint returned invalid rejection count", 0, false, true);
+    }
+    return { partial: true, rejectedSpans: rejected,
+      warning: Boolean(fields.errorMessage ?? fields.error_message) };
+  }
+  return { partial: false, rejectedSpans: 0, warning: false };
+}
+
 /**
  * Best-effort by design: a trace backend being unreachable must never turn a
  * successful Agent Run into a failed one. The caller logs what happened.
@@ -169,27 +257,11 @@ export async function exportTrace(
   const endpoint = config.otlpEndpoint.replace(/\/+$/, "") + "/v1/traces";
   const batches = batchSpans(usable, config.otlpMaxBatchBytes);
   for (const batch of batches) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), config.otlpTimeoutMs);
-    try {
-      const response = await fetch(endpoint, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          ...config.otlpHeaders,
-        },
-        body: JSON.stringify(
-          toOtlpPayload(batch, { serviceName: config.otlpServiceName, runId }),
-        ),
-        signal: controller.signal,
-      });
-      if (!response.ok) {
-        throw new Error(
-          "OTLP endpoint answered " + response.status + " " + response.statusText,
-        );
-      }
-    } finally {
-      clearTimeout(timer);
+    const result = await postOtlpBatch(config, endpoint, JSON.stringify(
+      toOtlpPayload(batch, { serviceName: config.otlpServiceName, runId }),
+    ));
+    if (result.rejectedSpans > 0) {
+      throw new OtlpDeliveryError("OTLP endpoint partially rejected batch; no retry permitted", 0, false);
     }
   }
   return { exported: usable.length, endpoint, batches: batches.length };

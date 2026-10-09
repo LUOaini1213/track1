@@ -61,7 +61,7 @@ from the official starter. This fork adds the missing observability plane.
 - Fastify control plane with asynchronous Run state
 - **Trace Plane:** correlated span waterfall per Run, `GET /api/runs/:id/trace`,
   named per the OpenTelemetry GenAI conventions (Development stage)
-- **OTLP export** of every finished Run to any OpenTelemetry collector
+- **Durable OTLP export:** per-batch checkpoints, retryable-error recovery and restart replay; terminal rejection counters
 - **Redaction** of key-like strings before JSON persist and HTTP
 - **Policy deny** for secret-exfiltration prompts/commands (protected fixture `.secrets/demo.env`)
 - Persistent Agent workspaces and Codex sessions
@@ -295,6 +295,10 @@ cp deploy/volcengine/terraform.tfvars.example \
 | `OTEL_EXPORTER_OTLP_HEADERS` | Unset | Comma-separated `key=value` headers for the collector, e.g. an API key. |
 | `OTEL_SERVICE_NAME` | `launchpad-trace-plane` | `service.name` on exported spans. |
 | `OTEL_EXPORTER_OTLP_MAX_BATCH_BYTES` | `3500000` | Split a large trace into several POSTs, so a long Run stays under the collector's body limit. |
+| `OTEL_EXPORTER_OTLP_TIMEOUT` | `5000` | Timeout for a collector request, in milliseconds. |
+| `OTEL_EXPORTER_OTLP_RETRY_INITIAL_MS` | `1000` | Initial background retry delay, with random jitter. |
+| `OTEL_EXPORTER_OTLP_RETRY_MAX_MS` | `60000` | Maximum exponential retry delay before jitter. Retry-After can extend it, capped at one day. |
+| `OTEL_EXPORTER_OTLP_MAX_RESPONSE_BYTES` | `65536` | Limit for decoded collector responses; configurable up to 4 MiB. |
 | `CODEX_SANDBOX_MODE` | `workspace-write` | Codex inner sandbox mode. |
 | `TRACE_CAPTURE_CONTENT` | `true` | Mirrors OTel's Opt-In rule for GenAI content. `false` withholds commands, error text and workspace paths from spans while keeping status, exit codes and the tree. |
 | `CODEX_TIMEOUT_MS` | `600000` | Maximum duration of one turn. |
@@ -352,6 +356,13 @@ npm run check
 terraform fmt -check -recursive deploy/volcengine
 docker compose config
 ```
+
+`npm run check` also starts built replay-server processes and a local HTTP
+collector, tests 503 and timeout recovery across forced process termination,
+and confirms that acknowledged traces are not resent after a restart. No model
+or cloud service is used. `npm run benchmark:otlp` measures end-to-end replay
+latency and the local cost of a durable outbox against disabled export.
+See [OTLP delivery semantics and measurements](docs/OTLP_DELIVERY.md).
 
 ## Documentation
 

@@ -8,7 +8,7 @@ import {
   inspectForSecretExfiltration,
 } from "./policy.js";
 import { redactText, registerSecrets } from "./redact.js";
-import { exportTrace } from "./otlp.js";
+import { OtlpOutbox } from "./otlp-outbox.js";
 import { SpanStore } from "./span-store.js";
 import { JsonStore } from "./store.js";
 import { estimateCostUsd } from "./cost.js";
@@ -68,6 +68,7 @@ function usageFromSpans(spans: TraceSpan[]): RunUsage | null {
 export class AgentService {
   private readonly activeExecutions = new Map<string, Promise<void>>();
   private readonly cancellationRequests = new Set<string>();
+  private readonly outbox: OtlpOutbox;
 
   constructor(
     private readonly config: AppConfig,
@@ -79,6 +80,7 @@ export class AgentService {
     ),
   ) {
     registerSecrets([config.arkApiKey, config.authToken]);
+    this.outbox = new OtlpOutbox(config, (message) => this.log("warn", message));
   }
 
   /**
@@ -168,6 +170,20 @@ export class AgentService {
     if (orphans.length > 0) {
       await this.spanStore.delete(orphans);
     }
+    await this.outbox.initialize();
+    await this.outbox.retain(known);
+    if (this.config.otlpEndpoint) {
+      // Recover the crash window between the final span file and queue commit.
+      // On first upgrade this also backfills existing terminal local traces once.
+      for (const run of this.store.read((database) => database.runs)) {
+        if (this.outbox.has(run.id)) continue;
+        const spans = await this.spanStore.read(run.id);
+        if (spans.length && spans.every((span) => span.endedAt !== null)) {
+          await this.queueTrace(run.id, spans);
+        }
+      }
+    }
+    this.outbox.start();
   }
 
   listAgents(): Agent[] {
@@ -296,6 +312,7 @@ export class AgentService {
       database.runs = database.runs.filter((item) => item.agentId !== id);
     });
     await this.spanStore.delete(runIds);
+    await this.outbox.forget(runIds);
     const archivedWorkspace = await this.workspaces.archive(agent);
     if (!archivedWorkspace) {
       this.log(
@@ -368,6 +385,7 @@ export class AgentService {
   async shutdown(): Promise<void> {
     const ids = [...this.activeExecutions.keys()];
     await Promise.all(ids.map((id) => this.cancelExecution(id)));
+    await this.outbox.shutdown();
   }
 
   getRuns(agentId: string): AgentRun[] {
@@ -484,6 +502,7 @@ export class AgentService {
     const replay = isReplayRuntime(this.config);
     return {
       arkConfigured: isArkConfigured(this.config),
+      otlpDelivery: this.outbox.status(),
       arkBaseUrl: this.config.arkBaseUrl,
       arkModel: this.config.arkModel || null,
       codexAvailable: await this.runner.isAvailable(),
@@ -509,25 +528,19 @@ export class AgentService {
     collector.flush();
     const spans = collector.snapshot();
     await this.spanStore.write(runId, spans);
-    // Fire-and-forget: an unreachable trace backend must never turn a finished
-    // Run into a failed one. The Run's own record is already durable above.
-    void exportTrace(this.config, runId, spans)
-      .then((result) => {
-        if (result) {
-          this.log(
-            "warn",
-            "exported " + result.exported + " spans for run " + runId + " to " +
-              result.endpoint,
-          );
-        }
-      })
-      .catch((error: unknown) => {
-        this.log(
-          "warn",
-          "OTLP export failed for run " + runId + ": " +
-            (error instanceof Error ? error.message : String(error)),
-        );
-      });
+    await this.queueTrace(runId, spans);
+  }
+
+  private async queueTrace(runId: string, spans: TraceSpan[]): Promise<void> {
+    try {
+      // Await local publication only. HTTP retries never delay a Run verdict.
+      await this.outbox.enqueue(runId, spans);
+    } catch (error) {
+      // SpanStore remains the recovery source if the queue disk is unavailable.
+      // A transport/persistence fault must not relabel a successful model run.
+      this.log("warn", "OTLP queue not saved for " + runId + "; local spans retained: " +
+        redactText(error instanceof Error ? error.message : String(error)));
+    }
   }
 
   private async executeRun(agentAtStart: Agent, run: AgentRun): Promise<void> {
