@@ -1,6 +1,6 @@
 name: ci
 
-# 全离线：没有模型 key、没有 Codex 安装、没有容器引擎、没有网络请求。
+# 无模型 key、Codex 或容器引擎；OTLP 恢复检查仅使用本机 HTTP。
 #
 # 这一点是设计出来的，不是碰巧：
 #   - `codex-runner.live.test.ts` 跑的是 `fixtures/fake-codex.js`，不是真的 Codex；
@@ -49,3 +49,5 @@ jobs:
         run: npm run smoke
       - name: Replay smoke — complete, fail, and deny real HTTP runs
         run: npm run smoke:replay
+      - name: OTLP smoke — 503, timeout and killed-process recovery
+        run: npm run smoke:otlp

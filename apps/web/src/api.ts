@@ -3,6 +3,7 @@ import type {
   AgentRun,
   Message,
   RunCompareSide,
+  RunOtlpDelivery,
   SystemInfo,
   TraceSpan,
 } from "./types";
@@ -92,7 +93,9 @@ export const api = {
       spans: TraceSpan[];
       usage: AgentRun["usage"];
       estimatedCostUsd: number | null;
+      delivery: RunOtlpDelivery;
     }>("/api/runs/" + id + "/trace"),
+  runDelivery: (id: string) => request<{ delivery: RunOtlpDelivery }>("/api/runs/" + id + "/delivery"),
   compareRuns: (agentId: string, left?: string, right?: string) => {
     const query = new URLSearchParams();
     if (left) query.set("left", left);

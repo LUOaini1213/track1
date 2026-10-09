@@ -1,0 +1,170 @@
+# Durable OTLP delivery
+
+Finished Run spans are published locally, then placed in a file-backed outbox.
+Only the local write is awaited; collector HTTP latency and retries happen in
+one background worker. A collector outage does not turn a completed Run into a
+failure. The existing trace endpoint continues to read the local SpanStore.
+
+## Protocol outcomes
+
+The exporter follows the [OTLP/HTTP response rules](https://opentelemetry.io/docs/specs/otlp/#otlphttp-response):
+
+| Collector outcome | Exporter behavior |
+| --- | --- |
+| Success | Checkpoint this batch, then send the next batch. |
+| HTTP 429, 502, 503, 504; connection failure or timeout | Retain the identical batch and retry with exponential backoff and random jitter. Honor Retry-After, capped at one day. |
+| Populated partial success | Never resend that batch. Record the rejected span count and continue later batches. A zero-rejection warning records a warning without retrying. |
+| Other 4xx/5xx | Never resend. Count the batch's spans as rejected, then continue later batches. |
+| Oversized or malformed success response | Do not resend. Record acceptance as uncertain, since the receiver may have accepted the request. |
+
+Full success expects HTTP 200; unexpected 201/204 success statuses are recorded
+as uncertain without retry. Empty HTTP 200 bodies are tolerated for existing
+collectors, alongside the specified JSON response. This is an explicit
+compatibility allowance, not strict validation of every OTLP response field.
+
+Response bodies are bounded after decompression (64 KiB by default, up to 4 MiB
+through `OTEL_EXPORTER_OTLP_MAX_RESPONSE_BYTES`). Error response bodies and warning
+text are not written to logs or the outbox. A single span exceeding the configured
+request limit cannot be split; the collector may reject it, which remains visible
+in the terminal loss counters rather than causing an infinite 413 retry loop.
+
+`GET /api/system` reports pending and fully delivered Runs separately from partial,
+rejected and uncertain outcomes; rejected/uncertain span and warning counts also
+survive restart. These are collector acknowledgments, not proof that a downstream
+storage system has committed the data.
+
+## Per-Run visibility
+
+`GET /api/runs/:id/trace` includes a safe `delivery` object alongside the existing
+Run and local spans. The Run timeline displays that object's status and accepted,
+rejected and uncertain span counts, remaining batches, current-batch failed-attempt count
+and collector warning count. This is independent of the Run's execution result:
+a completed task can still have pending or partially rejected remote telemetry.
+After execution completes, delivery refreshes every two seconds while pending,
+every ten seconds while paused, and every five seconds when recovery is needed.
+Settled outcomes stop polling. Selection changes and unmount ignore stale replies;
+a temporary API failure preserves the last observation with a refresh message.
+Refreshes use the compact `GET /api/runs/:id/delivery` response, which contains
+only the safe delivery object. Known queue records are read from memory without
+span-file I/O. A missing terminal record checks local spans to establish whether
+startup recovery is possible, but does not return the span tree to the poller.
+
+| State | Meaning |
+| --- | --- |
+| `disabled` | No collector configured; local traces remain available. |
+| `awaiting_completion` | The Run is still queued/running; final export has not started. |
+| `pending` | A persisted batch is awaiting acknowledgment or retry. |
+| `paused` | The queued destination differs from current configuration. |
+| `delivered` / `partial` / `rejected` / `uncertain` | Collector outcomes described above; counters are preserved across restart. |
+| `recovery_needed` | No queue record is known, but final exportable local spans exist. Restart reconciles them; earlier remote acceptance is unknown. |
+| `unavailable` | No queue record or final exportable local spans are available. |
+
+`checkpointPending` explicitly marks a received response whose acknowledgment is
+still awaiting durable publication; it does not pretend that the disk checkpoint
+has succeeded. Corruption evidence is shown separately. Collector URLs, headers,
+credentials, raw response text and outbox `lastError` are excluded from this API
+object and the status UI. Exported JSON includes the same safe delivery snapshot.
+
+For a zero-key local demonstration, build once and start the loopback collector:
+
+```sh
+npm run build
+npm run demo:otlp -- 503
+```
+
+Open the printed browser URL. The first replay Run is already completed with
+delivery pending. Enter `success` in the terminal and watch delivery change without
+sending another model task. Enter `partial`, `rejected` or `uncertain`, then send
+`Build a hello CLI` in the Playground for a fresh outcome. `quit` stops both
+processes and removes temporary demo data. Start with `disabled` to view export-off
+presentation; enabling it requires restarting the demo with another mode.
+
+## Persistence and crash semantics
+
+The outbox writes a redacted, immutable payload and per-batch cursor to
+`APP_DATA_DIR/otlp-outbox/<run-id>.json`, flushes the temporary file, and atomically
+publishes it. On POSIX it also syncs the directory; Windows does not expose a
+portable directory fsync, so sudden power-loss behavior depends on the filesystem.
+The tests demonstrate process-crash recovery, not power-failure recovery.
+
+Only one worker sends; concurrent enqueue calls for the same Run collapse into
+one payload. Once settled, the entry becomes a small payload-free acknowledgment
+with accepted/rejected/uncertain counts. This prevents normal restarts or repeated
+enqueue calls from resending settled Runs. If checkpoint publication fails after
+a response is received, the live process retries the disk write only, retaining
+the known response without issuing another HTTP request.
+
+A crash after collector acceptance but before checkpoint publication can still
+cause an ambiguous batch to be replayed. Stable trace/span ids are preserved, but
+OTLP does not guarantee receiver deduplication or exactly-once ingestion. Rejected
+span identities are not returned in partial success, so the exporter cannot retry
+only the rejected subset. The locally retained full trace is the diagnostic source.
+
+Startup reconciles final local spans missing an outbox entry, recovering the
+window between SpanStore publication and enqueue. On first upgrade, existing
+terminal traces are backfilled once; previously exported traces may therefore
+appear again at receivers without deduplication. Unreadable queue entries are
+preserved with a `.corrupt.*` suffix and recovered from local final spans, which
+also makes their prior remote acceptance uncertain. Queue disk failures are logged;
+local spans remain available and startup retries reconciliation. Disk exhaustion
+cannot be advertised as guaranteed remote delivery.
+
+Outer metadata and inner OTLP payloads are validated before scheduling. A bad
+entry is quarantined and cannot prevent healthy entries from progressing;
+`quarantinedRecords` reports retained corruption evidence. Agent deletion removes
+all target Runs from in-memory scheduling before deleting any queue files, so
+one unlink failure cannot leave later deleted Runs exporting. Startup reconciles
+orphan queue files against the remaining Run records.
+
+Queued data is pinned to the original collector URL; changing the URL pauses those
+entries instead of forwarding historical content to a different destination.
+Restore the original URL to resume. Header credentials are read from current
+configuration and never stored in entries. Authentication changes therefore affect
+pending sends, while a terminal 401 remains a terminal rejection under the protocol.
+Deleted Agents purge their queue entries and acknowledgment metadata. A request
+already received remotely cannot be recalled. One process must own each data
+directory; shared multi-process outbox ownership is unsupported.
+
+Pending payloads and acknowledgment records have no automatic retention limit;
+an extended outage needs disk monitoring. The status endpoint exposes oldest
+pending age. Deleting an Agent removes its entries; deleting arbitrary queue
+files while keeping Runs can cause startup backfill and duplicate ingestion.
+
+## Verification and performance
+
+Run `npm run check` for unit tests, production build, replay HTTP checks, and
+`smoke:otlp`. The latter starts real built server processes and a loopback HTTP
+collector, forces SIGKILL after 503 and timeout faults, starts new processes on
+the same data directory, and checks byte-identical replay plus no resend of an
+acknowledged Run. The smoke waits for both the disk checkpoint and live status
+publication, because a rename is observable before directory fsync and summary
+publication finish. It also checks the compact per-Run acknowledgment API.
+Unit tests additionally cover partial success, warning replies,
+nonretryable HTTP codes, batching, header redaction, checkpoint disk failure,
+destination changes, shutdown, deletion and the SpanStore-to-outbox recovery gap.
+
+Run `npm run benchmark:otlp` to record the comparison in
+`docs/evidence/otlp-benchmark.json`. It uses four order-balanced replay blocks,
+two excluded warmups per block, and 40 measured Runs per arm by default. A separate
+alternating-order microbenchmark compares a 100-span file write with the same
+write plus a flushed outbox publication. Measurements are host-specific; the
+replay path uses no model, and differences do not establish an application-wide
+speedup or a cloud latency claim.
+
+Measured on 2026-10-09 with Node 24.18.0, Windows 10.0.26200 and an Intel i5-14500,
+at feature source `5552e1ef757a201ca1191b19e6cab100c2bca260`:
+
+| Measurement | Baseline p95 | Durable outbox p95 | Samples per arm |
+| --- | --- | --- | --- |
+| Replay HTTP Run completion; durable arm's collector always returns 503 | 219.998 ms | 203.759 ms | 40 |
+| Local persistence of 100 spans | 3.471 ms | 12.458 ms | 40 |
+
+All 40 measured durable-arm Runs completed. Including excluded warmups, 44
+pending Runs remained on disk during the 503 outage. The local persistence
+comparison shows the added flush/publication cost; the lower replay p95 is host
+variation, not evidence that exporting improves execution. The
+[raw benchmark](evidence/otlp-benchmark.json) records normalized source hashes and
+methodology. [Forced-process recovery evidence](evidence/otlp-recovery.json)
+records byte-identical replay after 503/timeout and no resend after confirmation.
+The [earlier measurement at source 3ab5f15](evidence/otlp-benchmark-3ab5f15.json)
+is retained as a historical observation, not attributed to subsequent UI changes.
