@@ -1,8 +1,8 @@
 {
-  "measuredAt": "2026-10-09T09:47:22.952Z",
-  "sourceCommit": "6fd559ca7207aaec902935fb27984baf4576905b",
+  "measuredAt": "2026-10-09T09:56:48.211Z",
+  "sourceCommit": "3ab5f15ae1df0268d8417ec4311427a81701cc03",
   "sourceHashes": {
-    "apps/server/src/otlp-outbox.ts": "9687462abf5f0f290b0f89bf2353e4fb75870d6d588c48abefd8b6a250f12cf1",
+    "apps/server/src/otlp-outbox.ts": "3f18bf05fbd22afb81352ecd4a9b1a6e58127d94eea92f4999c6e29101d09136",
     "apps/server/src/otlp.ts": "c1a611971eb80c3c09b59fa3bff6b5211468e56de6f6202fabb10e0dcc0b5c17",
     "apps/server/src/config.ts": "b16a6ce64c74585092bde365e7d438d9d76c146e968b7b3404bfd4f2ccf8408a",
     "apps/server/src/agent-service.ts": "5afc1aee910765dfd15da9a26c01c819bf521340c2e32831e3b8f1979744f875",
@@ -18,29 +18,29 @@
   "http": {
     "disabled": {
       "samples": 40,
-      "medianMs": 201.802,
-      "p95Ms": 218.116,
-      "meanMs": 198.175
+      "medianMs": 189.396,
+      "p95Ms": 232.74,
+      "meanMs": 193.235
     },
     "durable503": {
       "samples": 40,
-      "medianMs": 158.852,
-      "p95Ms": 201.731,
-      "meanMs": 164.451
+      "medianMs": 157.283,
+      "p95Ms": 203.691,
+      "meanMs": 163.98
     }
   },
   "localPersistence100Spans": {
     "spanOnly": {
       "samples": 40,
-      "medianMs": 2.688,
-      "p95Ms": 3.546,
-      "meanMs": 2.818
+      "medianMs": 2.637,
+      "p95Ms": 3.525,
+      "meanMs": 2.717
     },
     "spanAndOutbox": {
       "samples": 40,
-      "medianMs": 10.754,
-      "p95Ms": 12.343,
-      "meanMs": 10.818
+      "medianMs": 10.161,
+      "p95Ms": 12.039,
+      "meanMs": 10.377
     }
   },
   "queuedDuringCollector503": 44,

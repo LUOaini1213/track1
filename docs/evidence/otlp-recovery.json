@@ -12,6 +12,7 @@
   "delivery": {
     "enabled": true,
     "pending": 0,
+    "quarantinedRecords": 0,
     "delivered": 2,
     "partial": 0,
     "rejected": 0,
@@ -24,6 +25,6 @@
   },
   "runtime": "v24.18.0",
   "platform": "win32",
-  "sourceCommit": "6fd559ca7207aaec902935fb27984baf4576905b",
-  "measuredAt": "2026-10-09T09:48:48.8072494Z"
+  "sourceCommit": "3ab5f15ae1df0268d8417ec4311427a81701cc03",
+  "measuredAt": "2026-10-09T09:57:10.6725849Z"
 }
