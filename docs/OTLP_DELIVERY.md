@@ -37,7 +37,7 @@ storage system has committed the data.
 
 `GET /api/runs/:id/trace` includes a safe `delivery` object alongside the existing
 Run and local spans. The Run timeline displays that object's status and accepted,
-rejected and uncertain span counts, remaining batches, current-batch retry count
+rejected and uncertain span counts, remaining batches, current-batch failed-attempt count
 and collector warning count. This is independent of the Run's execution result:
 a completed task can still have pending or partially rejected remote telemetry.
 After execution completes, delivery refreshes every two seconds while pending,

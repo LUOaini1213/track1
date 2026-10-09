@@ -35,14 +35,24 @@ describe("rendered OTLP delivery status", () => {
       acceptedSpans: 7, rejectedSpans: 2, uncertainSpans: 3, warningBatches: 1, checkpointPending: true,
       corruptionEvidence: true,
     })} refreshError="Delivery status could not be refreshed. The last observation is shown." />);
-    expect(html).toContain("7 accepted · 2 rejected · 3 uncertain spans"); expect(html).toContain("1 collector warnings");
+    expect(html).toContain("7 accepted · 2 rejected · 3 uncertain spans"); expect(html).toContain("1 collector warning");
     expect(html).toContain("saving the local acknowledgment"); expect(html).toContain("damaged queue record was isolated");
     expect(html).toContain("last observation is shown");
   });
 
   it("keeps unconfigured export concise without an alarming loss counter", () => {
     const html = renderToStaticMarkup(<DeliveryStatus delivery={delivery("disabled")} refreshError={null} />);
-    expect(html).not.toContain("uncertain spans"); expect(html).not.toContain("retry attempts");
+    expect(html).not.toContain("uncertain spans"); expect(html).not.toContain("failed delivery attempt");
+  });
+
+  it.each([1, 2])("uses singular/plural for %s pending batches, failed attempts and warnings", (count) => {
+    const html = renderToStaticMarkup(<DeliveryStatus delivery={delivery("pending", {
+      pendingBatches: count, attempts: count, warningBatches: count,
+    })} refreshError={null} />);
+    expect(html).toContain(count === 1 ? "1 batch remaining" : "2 batches remaining");
+    expect(html).toContain(count === 1 ? "1 failed delivery attempt for current batch" : "2 failed delivery attempts for current batch");
+    expect(html).toContain(count === 1 ? "1 collector warning" : "2 collector warnings");
+    expect(html).not.toContain("retry attempts");
   });
 });
 

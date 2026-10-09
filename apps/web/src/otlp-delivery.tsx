@@ -27,9 +27,9 @@ export function DeliveryStatus({ delivery, refreshError }: {
     {description ? <p>{description.detail}</p> : null}
     {hasRecord ? <p className="otlp-delivery-counts">
       {delivery.acceptedSpans} accepted · {delivery.rejectedSpans} rejected · {delivery.uncertainSpans} uncertain spans
-      {delivery.pendingBatches > 0 ? " · " + delivery.pendingBatches + " batches remaining" : ""}
-      {delivery.attempts > 0 ? " · " + delivery.attempts + " retry attempts for current batch" : ""}
-      {delivery.warningBatches > 0 ? " · " + delivery.warningBatches + " collector warnings" : ""}
+      {delivery.pendingBatches > 0 ? " · " + delivery.pendingBatches + (delivery.pendingBatches === 1 ? " batch remaining" : " batches remaining") : ""}
+      {delivery.attempts > 0 ? " · " + delivery.attempts + " failed delivery attempt" + (delivery.attempts === 1 ? "" : "s") + " for current batch" : ""}
+      {delivery.warningBatches > 0 ? " · " + delivery.warningBatches + " collector warning" + (delivery.warningBatches === 1 ? "" : "s") : ""}
     </p> : null}
     {delivery?.checkpointPending ? <p>Response received; saving the local acknowledgment. Restarting before it is saved may replay the batch.</p> : null}
     {delivery?.corruptionEvidence ? <p>A damaged queue record was isolated; its earlier remote acceptance may be unknown.</p> : null}
