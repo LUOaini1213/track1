@@ -97,7 +97,9 @@ describe("per-Run OTLP delivery through the real trace API", () => {
     const collector = await target((response) => { response.writeHead(status); response.end(body); });
     const config = await configuration(collector.endpoint), { service, trace, delivery } = await open(config);
     const id = await execute(service);
-    await expect.poll(async () => (await trace(id)).delivery.state).toBe(state);
+    // A response can be known before its disk checkpoint finishes. Compare
+    // restart snapshots only after this explicit transient flag has cleared.
+    await expect.poll(async () => (await trace(id)).delivery).toMatchObject({ state, checkpointPending: false });
     const result = await trace(id), serialized = JSON.stringify(result.delivery);
     expect(await delivery(id)).toEqual(result.delivery);
     expect(result.run).toMatchObject({ status: "completed", output: "Task complete" });
