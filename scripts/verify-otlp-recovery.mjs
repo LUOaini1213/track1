@@ -38,6 +38,12 @@ try {
     return delivery.pending === 0 && delivery.delivered === 2;
   }, "durable acknowledgments published to status API");
   for (const runId of [first.runId, second.runId]) {
+    // The aggregate can be published before temporary-file cleanup completes
+    // and the live checkpoint flag clears. Observe that boundary explicitly.
+    await until(async () => {
+      const delivery = (await service.request(`/api/runs/${runId}/delivery`)).delivery;
+      return delivery.state === "delivered" && delivery.checkpointPending === false;
+    }, "per-Run acknowledgment checkpoint complete");
     const delivery = (await service.request(`/api/runs/${runId}/delivery`)).delivery;
     assert.equal(delivery.state, "delivered"); assert.equal(delivery.checkpointPending, false);
     assert(delivery.acceptedSpans > 0);
