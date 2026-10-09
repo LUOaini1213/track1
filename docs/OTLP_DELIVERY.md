@@ -136,7 +136,10 @@ Run `npm run check` for unit tests, production build, replay HTTP checks, and
 `smoke:otlp`. The latter starts real built server processes and a loopback HTTP
 collector, forces SIGKILL after 503 and timeout faults, starts new processes on
 the same data directory, and checks byte-identical replay plus no resend of an
-acknowledged Run. Unit tests additionally cover partial success, warning replies,
+acknowledged Run. The smoke waits for both the disk checkpoint and live status
+publication, because a rename is observable before directory fsync and summary
+publication finish. It also checks the compact per-Run acknowledgment API.
+Unit tests additionally cover partial success, warning replies,
 nonretryable HTTP codes, batching, header redaction, checkpoint disk failure,
 destination changes, shutdown, deletion and the SpanStore-to-outbox recovery gap.
 
