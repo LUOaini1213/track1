@@ -30,9 +30,22 @@ try {
   await service.stop(true); mode = "ok"; const timeoutCount = target.requests.length; service = await start(root, config);
   await until(async () => (await queued(second.runId)).state === "delivered", "restart replay after timeout");
   assert(target.requests.slice(timeoutCount).some((item) => item.body === secondBody));
+  // rename makes the checkpoint visible before directory fsync and the live
+  // summary publication complete. Observe both boundaries, rather than assuming
+  // a visible file means the status API has already published its acknowledgment.
+  await until(async () => {
+    const delivery = (await service.request("/api/system")).otlpDelivery;
+    return delivery.pending === 0 && delivery.delivered === 2;
+  }, "durable acknowledgments published to status API");
+  for (const runId of [first.runId, second.runId]) {
+    const delivery = (await service.request(`/api/runs/${runId}/delivery`)).delivery;
+    assert.equal(delivery.state, "delivered"); assert.equal(delivery.checkpointPending, false);
+    assert(delivery.acceptedSpans > 0);
+  }
   const status = (await service.request("/api/system")).otlpDelivery;
   assert.equal(status.pending, 0); assert.equal(status.delivered, 2);
   console.log(JSON.stringify({ result: "PASS", faultModes: ["HTTP 503", "HTTP timeout", "SIGKILL restart"],
-    acknowledgedRunNotResent: true, restoredPayloadsByteIdentical: true, terminalRuns: 2, collectorRequests: target.requests.length,
+    acknowledgedRunNotResent: true, restoredPayloadsByteIdentical: true, perRunAcknowledgmentsPublished: true,
+    terminalRuns: 2, collectorRequests: target.requests.length,
     delivery: status, runtime: process.version, platform: process.platform }));
 } finally { if (service) await service.stop(true); await target.close(); await removeRoot(root); }
