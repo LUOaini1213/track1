@@ -9,6 +9,7 @@ import {
 } from "./policy.js";
 import { redactText, registerSecrets } from "./redact.js";
 import { OtlpOutbox } from "./otlp-outbox.js";
+import { exportableSpans } from "./otlp.js";
 import { SpanStore } from "./span-store.js";
 import { JsonStore } from "./store.js";
 import { estimateCostUsd } from "./cost.js";
@@ -21,6 +22,7 @@ import type {
   CreateAgentInput,
   Message,
   RunUsage,
+  RunOtlpDelivery,
   TraceSpan,
   UpdateAgentInput,
 } from "./types.js";
@@ -370,6 +372,7 @@ export class AgentService {
     spans: AgentRun["spans"];
     usage: AgentRun["usage"];
     estimatedCostUsd: number | null;
+    delivery: RunOtlpDelivery;
   }> {
     const run = this.getRun(runId);
     const spans = await this.spanStore.read(runId);
@@ -379,6 +382,8 @@ export class AgentService {
       spans,
       usage: run.usage,
       estimatedCostUsd: estimateCostUsd(run.usage, this.config.costRates),
+      delivery: this.outbox.runStatus(runId, ["queued", "running"].includes(run.status),
+        spans.length > 0 && spans.every((span) => span.endedAt !== null) && exportableSpans(spans).length > 0),
     };
   }
 

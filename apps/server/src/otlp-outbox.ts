@@ -5,7 +5,7 @@ import { z } from "zod";
 import type { AppConfig } from "./config.js";
 import { batchSpans, exportableSpans, OtlpDeliveryError, postOtlpBatch, toOtlpPayload } from "./otlp.js";
 import { redactDeep, redactText, registerSecrets } from "./redact.js";
-import type { TraceSpan } from "./types.js";
+import type { RunOtlpDelivery, TraceSpan } from "./types.js";
 
 const recordSchema = z.object({
   version: z.literal(1), runId: z.string().uuid(), endpoint: z.string().url(),
@@ -17,7 +17,8 @@ const recordSchema = z.object({
   uncertainSpans: z.number().int().nonnegative(), warningBatches: z.number().int().nonnegative(),
 });
 type Record = z.infer<typeof recordSchema>;
-type Summary = Pick<Record, "state" | "endpoint" | "nextAttemptAt" | "createdAt" | "rejectedSpans" | "uncertainSpans" | "warningBatches">;
+type Summary = Pick<Record, "state" | "endpoint" | "nextAttemptAt" | "createdAt" | "settledAt" | "attempts"
+  | "acceptedSpans" | "rejectedSpans" | "uncertainSpans" | "warningBatches"> & { pendingBatches: number };
 
 const payloadSchema = z.object({ resourceSpans: z.array(z.object({
   resource: z.object({ attributes: z.array(z.object({ key: z.string(), value: z.object({ stringValue: z.string() }) })) }),
@@ -37,6 +38,11 @@ function payloadSpanCount(body: string, runId: string): number {
     for (const scope of resource.scopeSpans) count += scope.spans.length;
   }
   return count;
+}
+
+function isoTime(value: number | null): string | null {
+  const date = new Date(value ?? NaN);
+  return Number.isFinite(date.getTime()) ? date.toISOString() : null;
 }
 
 /** A single-process, file-backed outbox. Payloads are immutable; acknowledgments
@@ -156,7 +162,27 @@ export class OtlpOutbox {
 
   private summary(record: Record): Summary {
     return { state: record.state, endpoint: record.endpoint, nextAttemptAt: record.nextAttemptAt, createdAt: record.createdAt,
-      rejectedSpans: record.rejectedSpans, uncertainSpans: record.uncertainSpans, warningBatches: record.warningBatches };
+      settledAt: record.settledAt, attempts: record.attempts, pendingBatches: record.batches.length - record.nextBatch,
+      acceptedSpans: record.acceptedSpans, rejectedSpans: record.rejectedSpans,
+      uncertainSpans: record.uncertainSpans, warningBatches: record.warningBatches };
+  }
+
+  runStatus(runId: string, active: boolean, recoveryPossible: boolean): RunOtlpDelivery {
+    const empty: RunOtlpDelivery = { state: "disabled", acceptedSpans: 0, rejectedSpans: 0, uncertainSpans: 0,
+      warningBatches: 0, attempts: 0, pendingBatches: 0, queuedAt: null, settledAt: null, nextRetryAt: null,
+      checkpointPending: false, recoveryPossible: false, corruptionEvidence: this.quarantined.has(runId) };
+    if (!this.config.otlpEndpoint) return empty;
+    const checkpoint = this.checkpoints.get(runId);
+    const entry = checkpoint ? this.summary(checkpoint) : this.known.get(runId);
+    if (!entry) return { ...empty, state: active ? "awaiting_completion" : recoveryPossible ? "recovery_needed" : "unavailable",
+      recoveryPossible: !active && recoveryPossible };
+    const paused = entry.state === "pending" && entry.endpoint !== this.endpoint();
+    return { state: paused ? "paused" : entry.state, acceptedSpans: entry.acceptedSpans,
+      rejectedSpans: entry.rejectedSpans, uncertainSpans: entry.uncertainSpans, warningBatches: entry.warningBatches,
+      attempts: entry.attempts, pendingBatches: entry.pendingBatches, queuedAt: isoTime(entry.createdAt),
+      settledAt: isoTime(entry.settledAt),
+      nextRetryAt: entry.state === "pending" && !paused ? isoTime(entry.nextAttemptAt) : null,
+      checkpointPending: Boolean(checkpoint), recoveryPossible: false, corruptionEvidence: empty.corruptionEvidence };
   }
 
   status() {

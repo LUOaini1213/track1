@@ -33,6 +33,48 @@ rejected and uncertain outcomes; rejected/uncertain span and warning counts also
 survive restart. These are collector acknowledgments, not proof that a downstream
 storage system has committed the data.
 
+## Per-Run visibility
+
+`GET /api/runs/:id/trace` includes a safe `delivery` object alongside the existing
+Run and local spans. The Run timeline displays that object's status and accepted,
+rejected and uncertain span counts, remaining batches, current-batch retry count
+and collector warning count. This is independent of the Run's execution result:
+a completed task can still have pending or partially rejected remote telemetry.
+After execution completes, delivery refreshes every two seconds while pending,
+every ten seconds while paused, and every five seconds when recovery is needed.
+Settled outcomes stop polling. Selection changes and unmount ignore stale replies;
+a temporary API failure preserves the last observation with a refresh message.
+
+| State | Meaning |
+| --- | --- |
+| `disabled` | No collector configured; local traces remain available. |
+| `awaiting_completion` | The Run is still queued/running; final export has not started. |
+| `pending` | A persisted batch is awaiting acknowledgment or retry. |
+| `paused` | The queued destination differs from current configuration. |
+| `delivered` / `partial` / `rejected` / `uncertain` | Collector outcomes described above; counters are preserved across restart. |
+| `recovery_needed` | No queue record is known, but final exportable local spans exist. Restart reconciles them; earlier remote acceptance is unknown. |
+| `unavailable` | No queue record or final exportable local spans are available. |
+
+`checkpointPending` explicitly marks a received response whose acknowledgment is
+still awaiting durable publication; it does not pretend that the disk checkpoint
+has succeeded. Corruption evidence is shown separately. Collector URLs, headers,
+credentials, raw response text and outbox `lastError` are excluded from this API
+object and the status UI. Exported JSON includes the same safe delivery snapshot.
+
+For a zero-key local demonstration, build once and start the loopback collector:
+
+```sh
+npm run build
+npm run demo:otlp -- 503
+```
+
+Open the printed browser URL. The first replay Run is already completed with
+delivery pending. Enter `success` in the terminal and watch delivery change without
+sending another model task. Enter `partial`, `rejected` or `uncertain`, then send
+`Build a hello CLI` in the Playground for a fresh outcome. `quit` stops both
+processes and removes temporary demo data. Start with `disabled` to view export-off
+presentation; enabling it requires restarting the demo with another mode.
+
 ## Persistence and crash semantics
 
 The outbox writes a redacted, immutable payload and per-batch cursor to
@@ -117,3 +159,5 @@ variation, not evidence that exporting improves execution. The
 [raw benchmark](evidence/otlp-benchmark.json) records normalized source hashes and
 methodology. [Forced-process recovery evidence](evidence/otlp-recovery.json)
 records byte-identical replay after 503/timeout and no resend after confirmation.
+The [earlier measurement at source 3ab5f15](evidence/otlp-benchmark-3ab5f15.json)
+is retained as a historical observation, not attributed to subsequent UI changes.

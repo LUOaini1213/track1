@@ -862,6 +862,22 @@ textarea:focus {
   align-items: center;
 }
 
+.otlp-delivery {
+  padding: 12px 16px;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  background: #f6f8fa;
+  font-size: 12px;
+  color: #536070;
+}
+.otlp-delivery-heading { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.otlp-delivery-heading .eyebrow { margin: 0; }
+.otlp-delivery-heading strong { color: #263441; font-size: 13px; }
+.otlp-delivery p { margin: 6px 0 0; line-height: 1.5; overflow-wrap: anywhere; }
+.otlp-delivered { background: #eef7f1; }
+.otlp-partial, .otlp-rejected, .otlp-uncertain, .otlp-recovery_needed { background: #fff6e8; }
+.otlp-refresh-error { color: #9d451d; }
+
 .trace-filters {
   display: flex;
   gap: 4px;

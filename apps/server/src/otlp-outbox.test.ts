@@ -278,11 +278,17 @@ describe("durable OTLP outbox over actual HTTP", () => {
     const internals = box as unknown as { write: (record: { state: string }) => Promise<void> };
     const original = internals.write.bind(box); let fail = true;
     internals.write = async (value) => {
-      if (value.state === "delivered" && fail) { fail = false; throw new Error("simulated ack disk failure"); }
+      if (value.state === "delivered" && fail) throw new Error("simulated ack disk failure");
       await original(value);
     };
     const id = randomUUID(); await box.enqueue(id, spans(id));
+    await expect.poll(() => box.runStatus(id, false, true).checkpointPending).toBe(true);
+    expect(box.runStatus(id, false, true)).toMatchObject({ state: "delivered", acceptedSpans: 1,
+      pendingBatches: 0, checkpointPending: true });
+    expect((await record(file(id))).state).toBe("pending");
+    fail = false;
     await expect.poll(async () => (await record(file(id))).state).toBe("delivered");
+    expect(box.runStatus(id, false, true).checkpointPending).toBe(false);
     expect(target.requests.length).toBe(1);
   });
 

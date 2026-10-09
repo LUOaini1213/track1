@@ -2,11 +2,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError, setAuthToken } from "./api";
 import { problemSpans } from "@launchpad/contract";
 import { formatMs, layoutSpans } from "./waterfall";
+import { DeliveryStatus, watchRunDelivery } from "./otlp-delivery";
 import type {
   Agent,
   AgentRun,
   Message,
   RunCompareSide,
+  RunOtlpDelivery,
   SystemInfo,
   TraceSpan,
 } from "./types";
@@ -44,6 +46,20 @@ function Spinner() {
   return <span className="spinner" aria-label="Loading" />;
 }
 
+export function RuntimeConfigBanner({ system }: { system: SystemInfo | null }) {
+  if (!system || system.replay || system.runtimeProvider === "replay" || (system.arkConfigured && system.codexAvailable)) return null;
+  return <div className="config-banner">
+    <span>!</span>
+    <div><strong>Runtime configuration needed</strong>
+      <p>{!system.arkConfigured
+        ? "Set ARK_API_KEY and ARK_MODEL in .env before using the Playground."
+        : system.runtimeProvider === "container"
+          ? "The local container engine or Agent Runtime image is unavailable. Rerun npm run poc."
+          : "Codex CLI was not found. Use the Docker image or install @openai/codex."}</p>
+    </div>
+  </div>;
+}
+
 type TraceFilter =
   | "all"
   | "problems"
@@ -74,6 +90,8 @@ function TracePanel({
   estimatedCostUsd,
   previousUsage,
   compare,
+  delivery,
+  deliveryError,
   onExport,
 }: {
   spans: TraceSpan[];
@@ -83,6 +101,8 @@ function TracePanel({
   estimatedCostUsd: number | null;
   previousUsage: AgentRun["usage"];
   compare: { left: RunCompareSide; right: RunCompareSide } | null;
+  delivery: RunOtlpDelivery | null;
+  deliveryError: string | null;
   onExport: () => void;
 }) {
   const [filter, setFilter] = useState<TraceFilter>("all");
@@ -231,6 +251,7 @@ function TracePanel({
           </button>
         </div>
       </div>
+      <DeliveryStatus delivery={delivery} refreshError={deliveryError} />
       <div className="trace-filters" role="group" aria-label="Span filter">
         {(
           ["all", "problems", "llm", "tool", "policy", "sandbox"] as TraceFilter[]
@@ -359,6 +380,8 @@ export default function App() {
   const [form, setForm] = useState(emptyForm);
   const [prompt, setPrompt] = useState("");
   const [activeRun, setActiveRun] = useState<AgentRun | null>(null);
+  const [delivery, setDelivery] = useState<RunOtlpDelivery | null>(null);
+  const [deliveryError, setDeliveryError] = useState<string | null>(null);
   const [spans, setSpans] = useState<TraceSpan[]>([]);
   const [selectedSpanId, setSelectedSpanId] = useState<string | null>(null);
   const [runUsage, setRunUsage] = useState<AgentRun["usage"]>(null);
@@ -421,6 +444,8 @@ export default function App() {
 
   useEffect(() => {
     setActiveRun(null);
+    setDelivery(null);
+    setDeliveryError(null);
     setSpans([]);
     setSelectedSpanId(null);
     setRunUsage(null);
@@ -443,6 +468,7 @@ export default function App() {
             setSpans(trace.spans);
             setRunUsage(trace.usage);
             setEstimatedCostUsd(trace.estimatedCostUsd);
+            setDelivery(trace.delivery);
           }
           const previous = result.runs[1];
           setPreviousUsage(previous?.usage ?? null);
@@ -465,6 +491,11 @@ export default function App() {
         setError(reason instanceof Error ? reason.message : String(reason)),
       );
   }, [refreshMessages, selectedId]);
+
+  useEffect(() => {
+    if (!activeRun || ["queued", "running"].includes(activeRun.status)) return;
+    return watchRunDelivery(activeRun.id, delivery, setDelivery, setDeliveryError);
+  }, [activeRun?.id, activeRun?.status, delivery]);
 
   useEffect(() => {
     if (selected) {
@@ -584,6 +615,8 @@ export default function App() {
           setSpans(trace.spans);
           setRunUsage(trace.usage);
           setEstimatedCostUsd(trace.estimatedCostUsd);
+          setDelivery(trace.delivery);
+          setDeliveryError(null);
         }
         if (!["queued", "running"].includes(trace.run.status)) {
           await Promise.all([refreshMessages(agentId), refreshAgents()]);
@@ -625,6 +658,8 @@ export default function App() {
         setPreviousUsage(activeRun?.usage ?? null);
         setRunCompare(null);
         setActiveRun(result.run);
+        setDelivery(null);
+        setDeliveryError(null);
         setSpans(result.run.spans ?? []);
         setSelectedSpanId(null);
       }
@@ -767,21 +802,7 @@ export default function App() {
       </aside>
 
       <main className="main">
-        {!system?.arkConfigured || !system?.codexAvailable ? (
-          <div className="config-banner">
-            <span>!</span>
-            <div>
-              <strong>Runtime configuration needed</strong>
-              <p>
-                {!system?.arkConfigured
-                  ? "Set ARK_API_KEY and ARK_MODEL in .env before using the Playground."
-                  : system.runtimeProvider === "container"
-                    ? "The local container engine or Agent Runtime image is unavailable. Rerun npm run poc."
-                    : "Codex CLI was not found. Use the Docker image or install @openai/codex."}
-              </p>
-            </div>
-          </div>
-        ) : null}
+        <RuntimeConfigBanner system={system} />
 
         {error && (
           <div className="error-banner" role="alert">
@@ -939,7 +960,7 @@ export default function App() {
                 <div ref={messageEnd} />
               </div>
 
-              {spans.length > 0 ? (
+              {activeRun ? (
                 <TracePanel
                   spans={spans}
                   selectedId={selectedSpanId}
@@ -948,12 +969,15 @@ export default function App() {
                   estimatedCostUsd={estimatedCostUsd}
                   previousUsage={previousUsage}
                   compare={runCompare}
+                  delivery={delivery}
+                  deliveryError={deliveryError}
                   onExport={() => {
                     const payload = {
                       run: activeRun,
                       spans,
                       usage: runUsage,
                       estimatedCostUsd,
+                      delivery,
                     };
                     const blob = new Blob([JSON.stringify(payload, null, 2)], {
                       type: "application/json",

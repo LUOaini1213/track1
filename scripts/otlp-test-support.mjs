@@ -57,7 +57,7 @@ export async function start(root, extra = {}) {
   try {
     await until(async () => { assert(child.exitCode === null, log); return (await request("/api/health")).ok; }, "server ready");
   } catch (error) { await stop(true); throw new Error(String(error) + "\n" + log); }
-  return { child, request, stop };
+  return { child, request, stop, url: `http://127.0.0.1:${port}` };
 }
 export async function agent(server) {
   const { agent } = await server.request("/api/agents", { name: "OTLP verification" });

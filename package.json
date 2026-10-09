@@ -22,7 +22,8 @@
     "smoke": "node scripts/smoke-start.mjs",
     "smoke:replay": "node scripts/smoke-replay.mjs",
     "smoke:otlp": "node scripts/verify-otlp-recovery.mjs",
-    "benchmark:otlp": "node scripts/benchmark-otlp.mjs"
+    "benchmark:otlp": "node scripts/benchmark-otlp.mjs",
+    "demo:otlp": "node scripts/demo-otlp.mjs"
   },
   "devDependencies": {
     "concurrently": "^9.2.1",

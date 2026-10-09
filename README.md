@@ -33,6 +33,13 @@ For the complete local verification (typecheck, tests, production build and HTTP
 startup smoke), run `npm run check`. The live-model and container paths below
 have their own additional requirements. Stop the demo with Ctrl+C.
 
+To watch completed Runs wait for a collector and then deliver without another
+model task, run `npm run build` followed by `npm run demo:otlp -- 503`. Open its
+printed URL and enter `success` in the terminal. The Run timeline shows accepted,
+rejected and uncertain span counts separately from task execution. Further
+[collector fault modes and delivery semantics](docs/OTLP_DELIVERY.md#per-run-visibility)
+are available in the same zero-key demo.
+
 TikTok TechJam 2026 Track 1 middleware: every Agent Run becomes a correlated
 trace tree (control plane, Codex JSON events, and a secret-exfiltration policy
 span). The browser Playground, Agent CRUD, Codex Runtime, and ECS path come
@@ -61,7 +68,7 @@ from the official starter. This fork adds the missing observability plane.
 - Fastify control plane with asynchronous Run state
 - **Trace Plane:** correlated span waterfall per Run, `GET /api/runs/:id/trace`,
   named per the OpenTelemetry GenAI conventions (Development stage)
-- **Durable OTLP export:** per-batch checkpoints, retryable-error recovery and restart replay; terminal rejection counters
+- **Durable OTLP export:** per-batch checkpoints, retryable-error recovery and restart replay; per-Run delivery status and loss counters in the timeline
 - **Redaction** of key-like strings before JSON persist and HTTP
 - **Policy deny** for secret-exfiltration prompts/commands (protected fixture `.secrets/demo.env`)
 - Persistent Agent workspaces and Codex sessions
