@@ -288,7 +288,7 @@ describe("durable OTLP outbox over actual HTTP", () => {
     expect((await record(file(id))).state).toBe("pending");
     fail = false;
     await expect.poll(async () => (await record(file(id))).state).toBe("delivered");
-    expect(box.runStatus(id, false, true).checkpointPending).toBe(false);
+    await expect.poll(() => box.runStatus(id, false, true).checkpointPending).toBe(false);
     expect(target.requests.length).toBe(1);
   });
 
