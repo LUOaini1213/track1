@@ -63,6 +63,13 @@ also makes their prior remote acceptance uncertain. Queue disk failures are logg
 local spans remain available and startup retries reconciliation. Disk exhaustion
 cannot be advertised as guaranteed remote delivery.
 
+Outer metadata and inner OTLP payloads are validated before scheduling. A bad
+entry is quarantined and cannot prevent healthy entries from progressing;
+`quarantinedRecords` reports retained corruption evidence. Agent deletion removes
+all target Runs from in-memory scheduling before deleting any queue files, so
+one unlink failure cannot leave later deleted Runs exporting. Startup reconciles
+orphan queue files against the remaining Run records.
+
 Queued data is pinned to the original collector URL; changing the URL pauses those
 entries instead of forwarding historical content to a different destination.
 Restore the original URL to resume. Header credentials are read from current

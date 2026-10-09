@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -224,6 +224,53 @@ describe("durable OTLP outbox over actual HTTP", () => {
     await Promise.all(Array.from({ length: 20 }, () => box.enqueue(id, trace)));
     await expect.poll(async () => (await record(file(id))).state).toBe("delivered");
     expect(target.requests.length).toBe(1);
+  });
+
+  it.each(["initialization", "live worker"])("isolates malformed inner payloads during %s and continues the next Run", async (phase) => {
+    const target = await collector(accepted), { box, config, file } = await setup(target.endpoint);
+    await box.shutdown(); // Prepare disk without a sender.
+    const badId = randomUUID(), goodId = randomUUID(); await box.enqueue(badId, spans(badId)); await box.enqueue(goodId, spans(goodId));
+    const original = await record(file(badId)); original.nextAttemptAt = 0;
+    await writeFile(file(badId), JSON.stringify(original));
+    const poison = { ...original, batches: ["{bad json}"] };
+    if (phase === "initialization") await writeFile(file(badId), JSON.stringify(poison));
+    const resumed = new OtlpOutbox(config); boxes.push(resumed); await resumed.initialize();
+    if (phase === "live worker") await writeFile(file(badId), JSON.stringify(poison));
+    resumed.start();
+    await expect.poll(async () => (await record(file(goodId))).state).toBe("delivered");
+    await expect.poll(() => resumed.status().quarantinedRecords).toBe(1);
+    expect(target.requests.length).toBe(1); expect(resumed.has(badId)).toBe(false);
+    expect(resumed.status().quarantinedRecords).toBe(1);
+    expect((await readdir(path.dirname(file(badId)))).some((name) => name.startsWith(badId + ".json.corrupt."))).toBe(true);
+  });
+
+  it("removes every deleted Run from scheduling even if deleting the first file fails", async () => {
+    const target = await collector((response, n) => { if (n > 1) accepted(response); }), { box, file } = await setup(target.endpoint, { OTEL_EXPORTER_OTLP_TIMEOUT: "5000" });
+    const first = randomUUID(), second = randomUUID(), third = randomUUID();
+    await box.enqueue(first, spans(first)); await box.enqueue(second, spans(second)); await box.enqueue(third, spans(third));
+    await expect.poll(() => target.requests.length).toBe(1);
+    await rm(file(first)); await mkdir(file(first)); // Force unlink failure on Windows and POSIX.
+    await expect(box.forget([first, second])).rejects.toThrow(first);
+    expect(box.has(first)).toBe(false); expect(box.has(second)).toBe(false);
+    await expect(readFile(file(second))).rejects.toMatchObject({ code: "ENOENT" });
+    // The surviving third Run proves the deleted hanging request was aborted,
+    // rather than occupying the sender until its five-second timeout.
+    await expect.poll(async () => (await record(file(third))).state).toBe("delivered");
+    expect(target.requests.length).toBe(2);
+    expect(target.requests[1]!.body).toContain(third);
+  });
+
+  it.each(["forget", "shutdown"])("does not send after %s occurs during a pending disk read", async (action) => {
+    const target = await collector(accepted), { box } = await setup(target.endpoint), id = randomUUID();
+    const internals = box as unknown as { read: (runId: string) => Promise<unknown>; worker: Promise<void> | null };
+    const original = internals.read.bind(box);
+    let entered!: () => void, release!: () => void;
+    const reading = new Promise<void>((resolve) => entered = resolve), blocked = new Promise<void>((resolve) => release = resolve);
+    internals.read = async (runId) => { const value = await original(runId); entered(); await blocked; return value; };
+    await box.enqueue(id, spans(id)); await reading;
+    if (action === "forget") { await box.forget([id]); release(); await internals.worker; }
+    else { const stopping = box.shutdown(); release(); await stopping; }
+    expect(target.requests.length).toBe(0);
   });
 
   it("retains the original payload if acknowledgment persistence fails after acceptance", async () => {

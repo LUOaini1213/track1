@@ -19,6 +19,26 @@ const recordSchema = z.object({
 type Record = z.infer<typeof recordSchema>;
 type Summary = Pick<Record, "state" | "endpoint" | "nextAttemptAt" | "createdAt" | "rejectedSpans" | "uncertainSpans" | "warningBatches">;
 
+const payloadSchema = z.object({ resourceSpans: z.array(z.object({
+  resource: z.object({ attributes: z.array(z.object({ key: z.string(), value: z.object({ stringValue: z.string() }) })) }),
+  scopeSpans: z.array(z.object({ spans: z.array(z.object({
+    traceId: z.string().regex(/^[0-9a-f]{32}$/), spanId: z.string().regex(/^[0-9a-f]{16}$/),
+    startTimeUnixNano: z.string().regex(/^\d+$/), endTimeUnixNano: z.string().regex(/^\d+$/),
+  })).min(1) })).min(1),
+})).min(1) });
+
+function payloadSpanCount(body: string, runId: string): number {
+  const payload = payloadSchema.parse(JSON.parse(body));
+  let count = 0;
+  for (const resource of payload.resourceSpans) {
+    if (!resource.resource.attributes.some((attribute) => attribute.key === "launchpad.run.id" && attribute.value.stringValue === runId)) {
+      throw new Error("Outbox payload belongs to another Run");
+    }
+    for (const scope of resource.scopeSpans) count += scope.spans.length;
+  }
+  return count;
+}
+
 /** A single-process, file-backed outbox. Payloads are immutable; acknowledgments
  * are persisted per batch. It offers at-least-once delivery, not exactly-once
  * OTLP ingestion. Only summaries are retained in memory while idle. */
@@ -28,6 +48,7 @@ export class OtlpOutbox {
   // A response already received is never sent again merely because persisting
   // its checkpoint failed. Retain that checkpoint and retry disk only.
   private readonly checkpoints = new Map<string, Record>();
+  private readonly quarantined = new Set<string>();
   private mutations: Promise<unknown> = Promise.resolve();
   private worker: Promise<void> | null = null;
   private timer: NodeJS.Timeout | null = null;
@@ -56,7 +77,26 @@ export class OtlpOutbox {
         (record.state === "pending" && record.nextBatch >= record.batches.length)) {
       throw new Error("Invalid outbox progress");
     }
+    if (record.state !== "pending" && (record.batches.length !== 0 || record.nextBatch !== 0)) {
+      throw new Error("Settled outbox record still has payloads");
+    }
+    for (const body of record.batches) payloadSpanCount(body, runId);
     return record;
+  }
+
+  private async quarantine(runId: string): Promise<void> {
+    await this.serialize(async () => {
+      this.known.delete(runId); this.checkpoints.delete(runId);
+      if (!z.string().uuid().safeParse(runId).success) return;
+      this.quarantined.add(runId);
+      try { await rename(this.file(runId), this.file(runId) + ".corrupt." + randomUUID()); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+          this.log("OTLP corrupt record could not be renamed for " + runId + "; retained on disk");
+        }
+      }
+    });
+    this.log("OTLP outbox record unreadable for " + runId + "; isolated, local spans remain recovery source");
   }
 
   /** Flush the temporary file before atomic publication. On POSIX also sync the
@@ -94,6 +134,8 @@ export class OtlpOutbox {
     if (!this.config.otlpEndpoint) return;
     await mkdir(this.directory, { recursive: true, mode: 0o700 });
     for (const file of await readdir(this.directory)) {
+      const historical = file.match(/^([0-9a-f-]{36})\.json\.corrupt\./);
+      if (historical) this.quarantined.add(historical[1]!);
       if (!file.endsWith(".json")) continue;
       const runId = file.slice(0, -5);
       try {
@@ -105,10 +147,7 @@ export class OtlpOutbox {
       } catch {
         // Preserve corrupt files for diagnosis; reconciliation can recover the
         // final payload from SpanStore, and stable ids limit ambiguous duplicates.
-        if (z.string().uuid().safeParse(runId).success) {
-          await rename(this.file(runId), this.file(runId) + ".corrupt." + randomUUID());
-        }
-        this.log("OTLP outbox record unreadable for " + runId + "; recovering from local spans");
+        await this.quarantine(runId);
       }
     }
   }
@@ -123,6 +162,7 @@ export class OtlpOutbox {
   status() {
     const entries = [...this.known.values()], pending = entries.filter((entry) => entry.state === "pending");
     return { enabled: Boolean(this.config.otlpEndpoint), pending: pending.length,
+      quarantinedRecords: this.quarantined.size,
       delivered: entries.filter((entry) => entry.state === "delivered").length,
       partial: entries.filter((entry) => entry.state === "partial").length,
       rejected: entries.filter((entry) => entry.state === "rejected").length,
@@ -206,10 +246,15 @@ export class OtlpOutbox {
         }
         continue;
       }
-      const record = await this.read(runId);
+      let record: Record;
+      try { record = await this.read(runId); }
+      catch { await this.quarantine(runId); continue; }
+      // Deletion or shutdown may have happened while readFile was in flight.
+      if (this.stopped) return;
+      if (!this.known.has(runId)) continue;
       const controller = new AbortController();
       this.current = { runId, controller };
-      const spanCount = JSON.parse(record.batches[record.nextBatch]!).resourceSpans[0].scopeSpans[0].spans.length as number;
+      const spanCount = payloadSpanCount(record.batches[record.nextBatch]!, runId);
       try {
         const result = await postOtlpBatch(this.config, record.endpoint, record.batches[record.nextBatch]!, controller.signal);
         if (result.rejectedSpans > spanCount) {
@@ -265,12 +310,16 @@ export class OtlpOutbox {
 
   async forget(runIds: string[]): Promise<void> {
     await this.serialize(async () => {
+      // Remove every target from scheduling before attempting any disk delete.
+      // Failure deleting the first file must not leave later deleted Runs live.
       for (const runId of runIds) {
         this.known.delete(runId);
         this.checkpoints.delete(runId);
         if (this.current?.runId === runId) this.current.controller.abort();
-        await rm(this.file(runId), { force: true });
       }
+      const outcomes = await Promise.allSettled(runIds.map((runId) => rm(this.file(runId), { force: true })));
+      const failed = runIds.filter((_, index) => outcomes[index]!.status === "rejected");
+      if (failed.length) throw new Error("OTLP queue files could not be deleted for Runs: " + failed.join(", "));
     });
   }
 
