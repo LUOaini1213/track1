@@ -1,14 +1,14 @@
 {
-  "measuredAt": "2026-10-09T09:56:48.211Z",
-  "sourceCommit": "3ab5f15ae1df0268d8417ec4311427a81701cc03",
+  "measuredAt": "2026-10-09T10:53:28.981Z",
+  "sourceCommit": "5552e1ef757a201ca1191b19e6cab100c2bca260",
   "sourceHashes": {
-    "apps/server/src/otlp-outbox.ts": "3f18bf05fbd22afb81352ecd4a9b1a6e58127d94eea92f4999c6e29101d09136",
+    "apps/server/src/otlp-outbox.ts": "05311019097078c9eea289c8e1b0b69dc36479c962f47c4bacc45d719653961d",
     "apps/server/src/otlp.ts": "c1a611971eb80c3c09b59fa3bff6b5211468e56de6f6202fabb10e0dcc0b5c17",
     "apps/server/src/config.ts": "b16a6ce64c74585092bde365e7d438d9d76c146e968b7b3404bfd4f2ccf8408a",
-    "apps/server/src/agent-service.ts": "5afc1aee910765dfd15da9a26c01c819bf521340c2e32831e3b8f1979744f875",
+    "apps/server/src/agent-service.ts": "7d37429a10ad831d5830213d7dfe7d49e585e3e79d4f13f3358df0d7890ab10f",
     "apps/server/src/span-store.ts": "b5c30e1a9ad04eb9ba24d4a2cd60513a7190bec4b35f0f4025d09fd49f77b5be",
     "scripts/benchmark-otlp.mjs": "7e1ea14ef379a92f51ca38eacb5a32a312f128c728658a0340fbb461ec88b366",
-    "scripts/otlp-test-support.mjs": "c65919acb462c55dad78c49fc609ef0b567200b1ca6da5dd3dc3f452faea7ffa",
+    "scripts/otlp-test-support.mjs": "e9aa6708a61bd122b3876acc39d80043606869d8a3f430faf3940952985f3a5b",
     "package-lock.json": "4c1a259e26417fb007f2ea96cc34ad959c8f7a06bcd942ca8de57af11c4b7034"
   },
   "sourceHashNormalization": "UTF-8 text with CRLF normalized to LF",
@@ -18,29 +18,29 @@
   "http": {
     "disabled": {
       "samples": 40,
-      "medianMs": 189.396,
-      "p95Ms": 232.74,
-      "meanMs": 193.235
+      "medianMs": 199.63,
+      "p95Ms": 219.998,
+      "meanMs": 194.671
     },
     "durable503": {
       "samples": 40,
-      "medianMs": 157.283,
-      "p95Ms": 203.691,
-      "meanMs": 163.98
+      "medianMs": 159.089,
+      "p95Ms": 203.759,
+      "meanMs": 165.145
     }
   },
   "localPersistence100Spans": {
     "spanOnly": {
       "samples": 40,
-      "medianMs": 2.637,
-      "p95Ms": 3.525,
-      "meanMs": 2.717
+      "medianMs": 2.657,
+      "p95Ms": 3.471,
+      "meanMs": 2.593
     },
     "spanAndOutbox": {
       "samples": 40,
-      "medianMs": 10.161,
-      "p95Ms": 12.039,
-      "meanMs": 10.377
+      "medianMs": 9.433,
+      "p95Ms": 12.458,
+      "meanMs": 9.675
     }
   },
   "queuedDuringCollector503": 44,
