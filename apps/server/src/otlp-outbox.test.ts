@@ -153,6 +153,13 @@ describe("durable OTLP outbox over actual HTTP", () => {
     expect(target.requests.length).toBe(1); expect(box.status().uncertainSpans).toBe(1);
   });
 
+  it.each([201, 204])("records unexpected HTTP %s acceptance as uncertain without retry", async (code) => {
+    const target = await collector((response) => { response.writeHead(code); response.end(); });
+    const { box, file } = await setup(target.endpoint); const id = randomUUID(); await box.enqueue(id, spans(id));
+    await expect.poll(async () => (await record(file(id))).state).toBe("uncertain"); await wait(350);
+    expect(target.requests.length).toBe(1); expect(box.status().delivered).toBe(0);
+  });
+
   it("honors Retry-After and shutdown aborts a hanging request promptly", async () => {
     const target = await collector((response) => { response.writeHead(503, { "retry-after": "2" }); response.end(); });
     const { box, file } = await setup(target.endpoint); const id = randomUUID(); await box.enqueue(id, spans(id));

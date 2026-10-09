@@ -58,9 +58,9 @@ try {
   } finally { await removeRoot(root); }
   const sourceFiles = ["apps/server/src/otlp-outbox.ts", "apps/server/src/otlp.ts", "apps/server/src/config.ts", "apps/server/src/agent-service.ts",
     "apps/server/src/span-store.ts", "scripts/benchmark-otlp.mjs", "scripts/otlp-test-support.mjs", "package-lock.json"];
-  const sourceHashes = Object.fromEntries(await Promise.all(sourceFiles.map(async (file) => [file, createHash("sha256").update(await readFile(path.join(repo, file))).digest("hex")])));
+  const sourceHashes = Object.fromEntries(await Promise.all(sourceFiles.map(async (file) => [file, createHash("sha256").update((await readFile(path.join(repo, file), "utf8")).replace(/\r\n/g, "\n")).digest("hex")])));
   const result = { measuredAt: new Date().toISOString(), sourceCommit: execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).trim(),
-    sourceHashes, runtime: process.version, platform: `${os.platform()} ${os.release()} ${os.arch()}`,
+    sourceHashes, sourceHashNormalization: "UTF-8 text with CRLF normalized to LF", runtime: process.version, platform: `${os.platform()} ${os.release()} ${os.arch()}`,
     cpu: os.cpus()[0]?.model, http: Object.fromEntries(Object.entries(http).map(([name, values]) => [name, stats(values)])),
     localPersistence100Spans: Object.fromEntries(Object.entries(local).map(([name, values]) => [name, stats(values)])),
     queuedDuringCollector503: pending, allRunsCompleted: true,

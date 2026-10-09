@@ -211,8 +211,12 @@ export async function postOtlpBatch(
     throw new OtlpDeliveryError("OTLP endpoint answered " + response.status, retryAfterMs,
       [429, 502, 503, 504].includes(response.status));
   }
-  // Empty bodies are accepted by several collectors. A nonempty response must
-  // be valid JSON; malformed or partial replies leave the batch pending.
+  if (response.status !== 200) {
+    await response.body?.cancel().catch(() => undefined);
+    throw new OtlpDeliveryError("OTLP success response had unexpected HTTP " + response.status, 0, false, true);
+  }
+  // Empty 200 bodies are tolerated for existing collectors. Invalid replies
+  // settle as uncertain; populated partial success is terminal without retry.
   const reply = await responseText(response, config.otlpMaxResponseBytes);
   if (reply.trim()) {
     let result: { partialSuccess?: unknown; partial_success?: unknown };

@@ -17,6 +17,11 @@ The exporter follows the [OTLP/HTTP response rules](https://opentelemetry.io/doc
 | Other 4xx/5xx | Never resend. Count the batch's spans as rejected, then continue later batches. |
 | Oversized or malformed success response | Do not resend. Record acceptance as uncertain, since the receiver may have accepted the request. |
 
+Full success expects HTTP 200; unexpected 201/204 success statuses are recorded
+as uncertain without retry. Empty HTTP 200 bodies are tolerated for existing
+collectors, alongside the specified JSON response. This is an explicit
+compatibility allowance, not strict validation of every OTLP response field.
+
 Response bodies are bounded after decompression (64 KiB by default, up to 4 MiB
 through `OTEL_EXPORTER_OTLP_MAX_RESPONSE_BYTES`). Error response bodies and warning
 text are not written to logs or the outbox. A single span exceeding the configured
