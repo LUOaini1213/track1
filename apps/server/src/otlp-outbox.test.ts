@@ -104,7 +104,7 @@ describe("durable OTLP outbox over actual HTTP", () => {
     const { box, file, config } = await setup(target.endpoint); const id = randomUUID(); await box.enqueue(id, spans(id, 2));
     await expect.poll(async () => (await record(file(id))).state).toBe("partial");
     expect((await record(file(id))).acceptedSpans).toBe(1); expect((await record(file(id))).rejectedSpans).toBe(1);
-    expect(box.status().delivered).toBe(0); expect(box.status().partial).toBe(1);
+    await expect.poll(() => box.status().partial).toBe(1); expect(box.status().delivered).toBe(0);
     await box.shutdown(); const resumed = new OtlpOutbox(config); boxes.push(resumed);
     await resumed.initialize(); resumed.start(); await wait(350); expect(target.requests.length).toBe(1);
   });
@@ -115,7 +115,7 @@ describe("durable OTLP outbox over actual HTTP", () => {
     });
     const { box, file } = await setup(target.endpoint); const id = randomUUID(); await box.enqueue(id, spans(id));
     await expect.poll(async () => (await record(file(id))).state).toBe("delivered"); await wait(350);
-    expect(target.requests.length).toBe(1); expect(box.status().warningBatches).toBe(1); expect(box.status().rejectedSpans).toBe(0);
+    expect(target.requests.length).toBe(1); await expect.poll(() => box.status().warningBatches).toBe(1); expect(box.status().rejectedSpans).toBe(0);
   });
 
   it("continues later batches once and preserves partial loss in the final outcome", async () => {
@@ -134,7 +134,7 @@ describe("durable OTLP outbox over actual HTTP", () => {
     const target = await collector((response) => { response.writeHead(code); response.end(); });
     const { box, file, config } = await setup(target.endpoint); const id = randomUUID(); await box.enqueue(id, spans(id));
     await expect.poll(async () => (await record(file(id))).state).toBe("rejected");
-    expect(box.status().rejectedSpans).toBe(1); expect(box.status().delivered).toBe(0);
+    await expect.poll(() => box.status().rejectedSpans).toBe(1); expect(box.status().delivered).toBe(0);
     await box.shutdown(); const resumed = new OtlpOutbox(config); boxes.push(resumed);
     await resumed.initialize(); resumed.start(); await wait(350); expect(target.requests.length).toBe(1);
   });
@@ -150,7 +150,7 @@ describe("durable OTLP outbox over actual HTTP", () => {
     const { box, file } = await setup(target.endpoint, { OTEL_EXPORTER_OTLP_MAX_RESPONSE_BYTES: "1024" });
     const id = randomUUID(); await box.enqueue(id, spans(id));
     await expect.poll(async () => (await record(file(id))).state).toBe("uncertain"); await wait(350);
-    expect(target.requests.length).toBe(1); expect(box.status().uncertainSpans).toBe(1);
+    expect(target.requests.length).toBe(1); await expect.poll(() => box.status().uncertainSpans).toBe(1);
   });
 
   it.each([201, 204])("records unexpected HTTP %s acceptance as uncertain without retry", async (code) => {
