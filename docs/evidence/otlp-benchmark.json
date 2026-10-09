@@ -1,0 +1,49 @@
+{
+  "measuredAt": "2026-10-09T09:47:22.952Z",
+  "sourceCommit": "6fd559ca7207aaec902935fb27984baf4576905b",
+  "sourceHashes": {
+    "apps/server/src/otlp-outbox.ts": "9687462abf5f0f290b0f89bf2353e4fb75870d6d588c48abefd8b6a250f12cf1",
+    "apps/server/src/otlp.ts": "c1a611971eb80c3c09b59fa3bff6b5211468e56de6f6202fabb10e0dcc0b5c17",
+    "apps/server/src/config.ts": "b16a6ce64c74585092bde365e7d438d9d76c146e968b7b3404bfd4f2ccf8408a",
+    "apps/server/src/agent-service.ts": "5afc1aee910765dfd15da9a26c01c819bf521340c2e32831e3b8f1979744f875",
+    "apps/server/src/span-store.ts": "b5c30e1a9ad04eb9ba24d4a2cd60513a7190bec4b35f0f4025d09fd49f77b5be",
+    "scripts/benchmark-otlp.mjs": "7e1ea14ef379a92f51ca38eacb5a32a312f128c728658a0340fbb461ec88b366",
+    "scripts/otlp-test-support.mjs": "c65919acb462c55dad78c49fc609ef0b567200b1ca6da5dd3dc3f452faea7ffa",
+    "package-lock.json": "4c1a259e26417fb007f2ea96cc34ad959c8f7a06bcd942ca8de57af11c4b7034"
+  },
+  "sourceHashNormalization": "UTF-8 text with CRLF normalized to LF",
+  "runtime": "v24.18.0",
+  "platform": "win32 10.0.26200 x64",
+  "cpu": "Intel(R) Core(TM) i5-14500",
+  "http": {
+    "disabled": {
+      "samples": 40,
+      "medianMs": 201.802,
+      "p95Ms": 218.116,
+      "meanMs": 198.175
+    },
+    "durable503": {
+      "samples": 40,
+      "medianMs": 158.852,
+      "p95Ms": 201.731,
+      "meanMs": 164.451
+    }
+  },
+  "localPersistence100Spans": {
+    "spanOnly": {
+      "samples": 40,
+      "medianMs": 2.688,
+      "p95Ms": 3.546,
+      "meanMs": 2.818
+    },
+    "spanAndOutbox": {
+      "samples": 40,
+      "medianMs": 10.754,
+      "p95Ms": 12.343,
+      "meanMs": 10.818
+    }
+  },
+  "queuedDuringCollector503": 44,
+  "allRunsCompleted": true,
+  "methodology": "Built replay server, actual loopback HTTP, 4 order-balanced blocks, 2 excluded warmups/block; local 100-span writes alternate order, 4 excluded warmups. Local durability arm fsyncs the outbox. Shared Windows host; no model or cloud benchmark."
+}

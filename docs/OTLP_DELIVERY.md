@@ -94,3 +94,19 @@ alternating-order microbenchmark compares a 100-span file write with the same
 write plus a flushed outbox publication. Measurements are host-specific; the
 replay path uses no model, and differences do not establish an application-wide
 speedup or a cloud latency claim.
+
+Measured on 2026-10-09 with Node 24.18.0, Windows 10.0.26200 and an Intel i5-14500,
+at feature source `6fd559ca7207aaec902935fb27984baf4576905b`:
+
+| Measurement | Baseline p95 | Durable outbox p95 | Samples per arm |
+| --- | --- | --- | --- |
+| Replay HTTP Run completion; durable arm's collector always returns 503 | 218.116 ms | 201.731 ms | 40 |
+| Local persistence of 100 spans | 3.546 ms | 12.343 ms | 40 |
+
+All 40 measured durable-arm Runs completed. Including excluded warmups, 44
+pending Runs remained on disk during the 503 outage. The local persistence
+comparison shows the added flush/publication cost; the lower replay p95 is host
+variation, not evidence that exporting improves execution. The
+[raw benchmark](evidence/otlp-benchmark.json) records normalized source hashes and
+methodology. [Forced-process recovery evidence](evidence/otlp-recovery.json)
+records byte-identical replay after 503/timeout and no resend after confirmation.
