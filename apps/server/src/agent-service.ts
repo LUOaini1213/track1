@@ -73,6 +73,8 @@ export class AgentService {
   private readonly activeExecutions = new Map<string, Promise<void>>();
   private readonly cancellationRequests = new Set<string>();
   private readonly outbox: OtlpOutbox;
+  private readonly deletingAgents = new Map<string, number>();
+  private readonly agentChanges = new Map<string, Set<Promise<unknown>>>();
   private deletionCleanup: Promise<unknown> = Promise.resolve();
   private cleanupTimer: NodeJS.Timeout | null = null;
   private shuttingDown = false;
@@ -268,6 +270,10 @@ export class AgentService {
   }
 
   async updateAgent(id: string, input: UpdateAgentInput): Promise<Agent> {
+    return this.trackAgentChange(id, () => this.updateAgentNow(id, input));
+  }
+
+  private async updateAgentNow(id: string, input: UpdateAgentInput): Promise<Agent> {
     this.assertAgentTextAllowed(input);
     const current = this.getAgent(id);
     if (current.status === "busy") {
@@ -287,6 +293,7 @@ export class AgentService {
         : {}),
     });
     const updated = await this.store.mutate((database) => {
+      this.assertNotDeleting(id);
       const agent = database.agents.find((item) => item.id === id);
       if (!agent) {
         throw new HttpError(404, "Agent not found");
@@ -307,6 +314,15 @@ export class AgentService {
   async deleteAgent(
     id: string,
   ): Promise<DeletionResult> {
+    this.deletingAgents.set(id, (this.deletingAgents.get(id) ?? 0) + 1);
+    try { return await this.deleteAgentNow(id); }
+    finally {
+      const remaining = this.deletingAgents.get(id)! - 1;
+      if (remaining) this.deletingAgents.set(id, remaining); else this.deletingAgents.delete(id);
+    }
+  }
+
+  private async deleteAgentNow(id: string): Promise<DeletionResult> {
     if (this.store.read((database) => database.deletions.some((item) => item.id === id))) {
       const results = await this.cleanupDeletions();
       this.scheduleDeletionCleanup();
@@ -317,19 +333,28 @@ export class AgentService {
     // the workspace, and without the mark a Run admitted a moment earlier kept
     // executing inside the directory being moved out from under it.
     await this.setStatus(id, "stopped");
+    // A change may have committed but not yet published activeExecutions, or
+    // may still be writing AGENTS.md. Settle those admissions before cancel
+    // and archive; new admissions are rejected while any DELETE is active.
+    await Promise.allSettled([...(this.agentChanges.get(id) ?? [])]);
     await this.cancelExecution(id);
     // Remove the record first. Archiving used to come first and, when it threw,
     // left the Agent in the store with its workspace already moved — every
     // retry then failed with ENOENT and the Agent could never be deleted.
-    const runIds = this.store.read((database) =>
-      database.runs.filter((run) => run.agentId === id).map((run) => run.id),
-    );
-    await this.store.mutate((database) => {
+    const runIds = await this.store.mutate((database) => {
+      // Both DELETEs can pass getAgent/setStatus before either removal commits.
+      // Resolve the intent inside the serialized mutation, fixing one archive
+      // destination. A completed concurrent delete must not create it again.
+      const existing = database.deletions.find((item) => item.id === id);
+      if (existing) return existing.runIds;
+      if (!database.agents.some((item) => item.id === id)) return [];
+      const runIds = database.runs.filter((run) => run.agentId === id).map((run) => run.id);
       database.deletions.push({ id, runIds, workspace: { agentId: id,
         workspacePath: agent.workspacePath, archivePath: this.workspaces.archivePath(id) } });
       database.agents = database.agents.filter((item) => item.id !== id);
       database.messages = database.messages.filter((item) => item.agentId !== id);
       database.runs = database.runs.filter((item) => item.agentId !== id);
+      return runIds;
     });
     this.outbox.exclude(runIds);
     const results = await this.cleanupDeletions();
@@ -506,6 +531,10 @@ export class AgentService {
     agentId: string,
     prompt: string,
   ): Promise<{ run: AgentRun; message: Message }> {
+    return this.trackAgentChange(agentId, () => this.sendMessageNow(agentId, prompt));
+  }
+
+  private async sendMessageNow(agentId: string, prompt: string): Promise<{ run: AgentRun; message: Message }> {
     if (!isArkConfigured(this.config) && !isReplayRuntime(this.config)) {
       throw new HttpError(
         503,
@@ -538,6 +567,7 @@ export class AgentService {
       createdAt: timestamp,
     };
     const agentAtStart = await this.store.mutate((database) => {
+      this.assertNotDeleting(agentId);
       const storedAgent = database.agents.find((item) => item.id === agentId);
       if (!storedAgent) {
         throw new HttpError(404, "Agent not found");
@@ -556,6 +586,13 @@ export class AgentService {
       storedAgent.updatedAt = timestamp;
       return snapshot;
     });
+    if (this.deletingAgents.has(agentId)) {
+      await this.store.mutate((database) => {
+        const admitted = database.runs.find((item) => item.id === runId);
+        if (admitted) { admitted.status = "cancelled"; admitted.error = "Agent deletion started before execution"; admitted.completedAt = now(); }
+      });
+      throw new HttpError(409, "Agent deletion is in progress");
+    }
     const execution = this.executeRun(agentAtStart, run);
     this.activeExecutions.set(agentId, execution);
     void execution
@@ -658,7 +695,7 @@ export class AgentService {
       rootSpanId,
     );
     try {
-      if (this.cancellationRequests.has(agentAtStart.id)) {
+      if (this.cancellationRequests.has(agentAtStart.id) || this.deletingAgents.has(agentAtStart.id)) {
         throw new RunCancelledError();
       }
       const decision = inspectForSecretExfiltration(run.prompt);
@@ -830,6 +867,7 @@ export class AgentService {
 
   private async setStatus(id: string, status: Agent["status"]): Promise<Agent> {
     return this.store.mutate((database) => {
+      if (status === "ready") this.assertNotDeleting(id);
       const agent = database.agents.find((item) => item.id === id);
       if (!agent) {
         throw new HttpError(404, "Agent not found");
@@ -842,6 +880,19 @@ export class AgentService {
       agent.updatedAt = now();
       return structuredClone(agent);
     });
+  }
+
+  private assertNotDeleting(id: string): void {
+    if (this.deletingAgents.has(id)) throw new HttpError(409, "Agent deletion is in progress");
+  }
+
+  private async trackAgentChange<T>(id: string, change: () => Promise<T>): Promise<T> {
+    this.assertNotDeleting(id);
+    const pending = this.agentChanges.get(id) ?? new Set<Promise<unknown>>();
+    this.agentChanges.set(id, pending);
+    const operation = change(); pending.add(operation);
+    try { return await operation; }
+    finally { pending.delete(operation); if (!pending.size) this.agentChanges.delete(id); }
   }
 
   private async cancelExecution(agentId: string): Promise<void> {

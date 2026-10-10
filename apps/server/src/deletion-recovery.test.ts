@@ -86,6 +86,98 @@ async function collector() {
 }
 
 describe("recoverable Agent deletion through real storage and HTTP", () => {
+  it("rejects admissions queued before DELETE when their store mutation begins afterward", async () => {
+    const configuration = await config(), context = await open(configuration), agent = await context.service.createAgent({ name: "Queued admission" });
+    let entered!: () => void, release!: () => void;
+    const occupied = new Promise<void>((resolve) => { entered = resolve; }), gate = new Promise<void>((resolve) => { release = resolve; });
+    const blocker = context.store.mutate(async () => { entered(); await gate; }); await occupied;
+    const model = vi.spyOn(runner, "run");
+    const admissions = Promise.allSettled([context.service.startAgent(agent.id), context.service.sendMessage(agent.id, "queued before delete")]);
+    const deleting = context.service.deleteAgent(agent.id); release(); await blocker;
+    for (const outcome of await admissions) { expect(outcome.status).toBe("rejected"); if (outcome.status === "rejected") expect(outcome.reason.statusCode).toBe(409); }
+    await deleting; expect(model).not.toHaveBeenCalled();
+    expect(context.store.snapshot().agents).toEqual([]); expect(context.store.snapshot().runs).toEqual([]);
+  });
+
+  it("rejects Start, edit and message admission while DELETE is cancelling", async () => {
+    const configuration = await config(), context = await open(configuration), agent = await context.service.createAgent({ name: "Admission blocked" });
+    let entered!: () => void, release!: () => void;
+    const cancelled = new Promise<void>((resolve) => { entered = resolve; }), gate = new Promise<void>((resolve) => { release = resolve; });
+    vi.spyOn(context.service as unknown as { cancelExecution: (id: string) => Promise<void> }, "cancelExecution")
+      .mockImplementation(async () => { entered(); await gate; });
+    const deleting = context.service.deleteAgent(agent.id); await cancelled;
+    let outcomes;
+    try { outcomes = await Promise.allSettled([context.service.startAgent(agent.id),
+      context.service.updateAgent(agent.id, { instructions: "late edit" }), context.service.sendMessage(agent.id, "late admission")]); }
+    finally { release(); await deleting; }
+    expect(outcomes).toHaveLength(3);
+    for (const outcome of outcomes!) { expect(outcome.status).toBe("rejected"); if (outcome.status === "rejected") expect(outcome.reason.statusCode).toBe(409); }
+    expect(context.store.snapshot().agents).toEqual([]); expect(context.store.snapshot().runs).toEqual([]);
+    await expect(access(agent.workspacePath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("withholds a committed admission before it can publish activeExecutions or start a runner", async () => {
+    const configuration = await config(), context = await open(configuration), agent = await context.service.createAgent({ name: "Publication held" });
+    let admit!: () => void, publish!: () => void, stopped!: () => void, continueDelete!: () => void;
+    const committed = new Promise<void>((resolve) => { admit = resolve; }), publicationGate = new Promise<void>((resolve) => { publish = resolve; });
+    const marked = new Promise<void>((resolve) => { stopped = resolve; }), deleteGate = new Promise<void>((resolve) => { continueDelete = resolve; });
+    const originalMutation = context.store.mutate.bind(context.store); let holdAdmission = true;
+    vi.spyOn(context.store, "mutate").mockImplementation((async (mutation: never) => {
+      const result = await originalMutation(mutation);
+      if (holdAdmission) { holdAdmission = false; admit(); await publicationGate; }
+      return result;
+    }) as typeof context.store.mutate);
+    const mutable = context.service as unknown as { setStatus: (id: string, status: "stopped") => Promise<unknown>; activeExecutions: Map<string, unknown> };
+    const originalStatus = mutable.setStatus.bind(context.service);
+    vi.spyOn(mutable, "setStatus").mockImplementation(async (id, status) => { const result = await originalStatus(id, status); stopped(); await deleteGate; return result; });
+    const model = vi.spyOn(runner, "run");
+    const admission = context.service.sendMessage(agent.id, "committed but unpublished").then(() => ({ admitted: true, status: 0 }),
+      (error) => ({ admitted: false, status: error.statusCode }));
+    await committed; expect(context.store.snapshot().runs).toHaveLength(1);
+    const deleting = context.service.deleteAgent(agent.id); await marked; publish();
+    const outcome = await admission; continueDelete(); await deleting;
+    expect(outcome).toEqual({ admitted: false, status: 409 }); expect(model).not.toHaveBeenCalled();
+    expect(mutable.activeExecutions.size).toBe(0); expect(context.store.snapshot().runs).toEqual([]);
+    expect(context.store.snapshot().agents).toEqual([]);
+  });
+
+  it("settles an already writing edit before archiving, so it cannot recreate the workspace", async () => {
+    const configuration = await config(), context = await open(configuration), agent = await context.service.createAgent({ name: "Edit held" });
+    let entered!: () => void, release!: () => void;
+    const writing = new Promise<void>((resolve) => { entered = resolve; }), gate = new Promise<void>((resolve) => { release = resolve; });
+    const originalWrite = context.workspaces.writeInstructions.bind(context.workspaces);
+    vi.spyOn(context.workspaces, "writeInstructions").mockImplementation(async (changed) => { entered(); await gate; await originalWrite(changed); });
+    const edit = context.service.updateAgent(agent.id, { instructions: "already admitted edit" }).catch((error) => error.statusCode);
+    await writing; const deleting = context.service.deleteAgent(agent.id);
+    const finishedBeforeEdit = await Promise.race([deleting.then(() => true), new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 100))]);
+    release(); expect(await edit).toBe(409); const result = await deleting;
+    expect(finishedBeforeEdit).toBe(false); expect(result.cleanupPending).toBe(false);
+    await expect(access(result.archivedWorkspace!)).resolves.toBeUndefined();
+    await expect(access(agent.workspacePath)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(context.store.snapshot().deletions).toEqual([]);
+  });
+
+  it("commits one fixed cleanup intent when two DELETEs pass admission together", async () => {
+    const configuration = await config(), context = await open(configuration), agent = await context.service.createAgent({ name: "Concurrent deletion" });
+    faults.archive.add(agent.workspacePath);
+    let release!: () => void, entered!: () => void, arrivals = 0;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const admitted = new Promise<void>((resolve) => { entered = resolve; });
+    vi.spyOn(context.service as unknown as { cancelExecution: (id: string) => Promise<void> }, "cancelExecution")
+      .mockImplementation(async () => { if (++arrivals === 2) entered(); await gate; });
+    const planned = vi.spyOn(context.workspaces, "archivePath");
+    const left = context.service.deleteAgent(agent.id), right = context.service.deleteAgent(agent.id);
+    await admitted; release(); const results = await Promise.all([left, right]);
+    expect(results).toEqual([{ archivedWorkspace: null, cleanupPending: true }, { archivedWorkspace: null, cleanupPending: true }]);
+    expect(context.store.snapshot().agents).toEqual([]);
+    expect(context.store.snapshot().deletions).toHaveLength(1); expect(planned).toHaveBeenCalledTimes(1);
+    const originalPath = context.store.snapshot().deletions[0]!.workspace!.archivePath;
+    faults.archive.clear(); const retry = await context.service.deleteAgent(agent.id);
+    expect(retry).toEqual({ archivedWorkspace: originalPath, cleanupPending: false });
+    expect(context.store.snapshot().deletions).toEqual([]);
+    expect(await readdir(path.join(configuration.workspaceRoot, ".deleted"))).toEqual([path.basename(originalPath)]);
+  });
+
   it("archives despite EACCES, restarts healthy delivery, and retries the deleted id without 404", async () => {
     const target = await collector(), configuration = await config(target.endpoint), first = await open(configuration);
     await outbox(first.service).shutdown();

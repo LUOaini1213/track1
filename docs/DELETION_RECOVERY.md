@@ -4,6 +4,15 @@ The Agent, messages and Runs are removed in the same `launchpad.json` mutation
 that records their pending cleanup. The record contains only IDs, Run IDs and
 the original and planned archive paths, rather than prompts or credentials.
 Deleting a record does not restore the Agent when a filesystem operation fails.
+Concurrent DELETEs reuse the intent inside the serialized mutation, so there
+is one archive destination for the Agent.
+
+A deletion gate is established before the first await. Start, edit and message
+admission check it inside their store mutation as well as at relevant entry
+points. Deletion waits for already admitted edits and message publication to
+settle before cancelling and archiving. A Run committed before the gate but
+not yet published to active executions is cancelled without starting its runner.
+This prevents late instructions writes from recreating an archived workspace.
 
 After that commit, all affected Runs are synchronously excluded from OTLP
 scheduling and their current HTTP request is aborted. A checkpoint already
@@ -44,7 +53,9 @@ Regression coverage uses real JSON/span/outbox files, Fastify requests and a
 loopback HTTP collector with injected file-specific permission errors. It
 checks persisted deletion intent, archive progress despite unlink failures,
 healthy delivery after restart without deleted-Run export, explicit and timed
-retry, legacy orphan migration, and the rename-before-ack crash window. The
+retry, legacy orphan migration, and the rename-before-ack crash window.
+Controlled concurrency regressions exercise queued and committed admissions,
+Start/edit during cancellation, in-flight workspace edits and duplicate DELETEs. The
 runner is prohibited from making model calls. Existing source-pinned OTLP
 benchmarks remain historical measurements of their recorded source commits;
 this deletion change does not claim new benchmark results.
