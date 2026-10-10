@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
+import { z } from "zod";
 import type { AppConfig } from "./config.js";
 import { isArkConfigured, isReplayRuntime } from "./config.js";
 import { HttpError, PolicyDeniedError, RunCancelledError } from "./errors.js";
@@ -29,6 +30,7 @@ import type {
 import { WorkspaceManager } from "./workspace.js";
 
 const now = () => new Date().toISOString();
+type DeletionResult = { archivedWorkspace: string | null; cleanupPending: boolean };
 
 /**
  * A failed or denied Run never reaches the runner's usage result, but the model
@@ -71,6 +73,9 @@ export class AgentService {
   private readonly activeExecutions = new Map<string, Promise<void>>();
   private readonly cancellationRequests = new Set<string>();
   private readonly outbox: OtlpOutbox;
+  private deletionCleanup: Promise<unknown> = Promise.resolve();
+  private cleanupTimer: NodeJS.Timeout | null = null;
+  private shuttingDown = false;
 
   constructor(
     private readonly config: AppConfig,
@@ -168,12 +173,17 @@ export class AgentService {
     }
 
     const known = new Set(this.store.read((database) => database.runs.map((r) => r.id)));
-    const orphans = await this.spanStore.orphans(known);
-    if (orphans.length > 0) {
-      await this.spanStore.delete(orphans);
-    }
     await this.outbox.initialize();
-    await this.outbox.retain(known);
+    const journalled = new Set(this.store.read((database) => database.deletions.flatMap((item) => item.runIds)));
+    const orphans = [...new Set([...await this.spanStore.orphans(known), ...this.outbox.orphanRunIds(known)])]
+      .filter((id) => !journalled.has(id) && z.string().uuid().safeParse(id).success);
+    if (orphans.length) {
+      await this.store.mutate((database) => database.deletions.push({ id: randomUUID(), runIds: orphans, workspace: null }));
+    }
+    // Read all exclusion intents before starting the exporter. File deletion
+    // failures cannot make an orphan eligible again or block healthy Agents.
+    this.outbox.exclude(this.store.read((database) => database.deletions.flatMap((item) => item.runIds)));
+    await this.cleanupDeletions();
     if (this.config.otlpEndpoint) {
       // Recover the crash window between the final span file and queue commit.
       // On first upgrade this also backfills existing terminal local traces once.
@@ -186,6 +196,7 @@ export class AgentService {
       }
     }
     this.outbox.start();
+    this.scheduleDeletionCleanup();
   }
 
   listAgents(): Agent[] {
@@ -295,7 +306,12 @@ export class AgentService {
 
   async deleteAgent(
     id: string,
-  ): Promise<{ archivedWorkspace: string | null }> {
+  ): Promise<DeletionResult> {
+    if (this.store.read((database) => database.deletions.some((item) => item.id === id))) {
+      const results = await this.cleanupDeletions();
+      this.scheduleDeletionCleanup();
+      return results.get(id) ?? { archivedWorkspace: null, cleanupPending: false };
+    }
     const agent = this.getAgent(id);
     // Same ordering as stopAgent, and for a sharper reason: archive() renames
     // the workspace, and without the mark a Run admitted a moment earlier kept
@@ -309,21 +325,55 @@ export class AgentService {
       database.runs.filter((run) => run.agentId === id).map((run) => run.id),
     );
     await this.store.mutate((database) => {
+      database.deletions.push({ id, runIds, workspace: { agentId: id,
+        workspacePath: agent.workspacePath, archivePath: this.workspaces.archivePath(id) } });
       database.agents = database.agents.filter((item) => item.id !== id);
       database.messages = database.messages.filter((item) => item.agentId !== id);
       database.runs = database.runs.filter((item) => item.agentId !== id);
     });
-    await this.spanStore.delete(runIds);
-    await this.outbox.forget(runIds);
-    const archivedWorkspace = await this.workspaces.archive(agent);
-    if (!archivedWorkspace) {
-      this.log(
-        "warn",
-        "agent " + id + " deleted, but its workspace could not be archived: " +
-          agent.workspacePath,
-      );
-    }
-    return { archivedWorkspace };
+    this.outbox.exclude(runIds);
+    const results = await this.cleanupDeletions();
+    this.scheduleDeletionCleanup();
+    return results.get(id) ?? { archivedWorkspace: null, cleanupPending: false };
+  }
+
+  /** File work is idempotent; the removal intent survives until every step and
+   * the final DB acknowledgment succeeds. Archive runs even if unlink fails. */
+  private cleanupDeletions(): Promise<Map<string, DeletionResult>> {
+    const operation = this.deletionCleanup.catch(() => undefined).then(async () => {
+      const results = new Map<string, DeletionResult>();
+      for (const item of this.store.read((database) => database.deletions)) {
+        const outcomes = await Promise.allSettled([
+          this.outbox.forget(item.runIds),
+          this.spanStore.deleteForCleanup(item.runIds),
+          item.workspace ? this.workspaces.archive({ id: item.workspace.agentId,
+            workspacePath: item.workspace.workspacePath }, item.workspace.archivePath, true) : Promise.resolve(null),
+        ]);
+        const archive = outcomes[2]!;
+        const failed = ["otlp", "spans", "archive"].filter((_, index) => outcomes[index]!.status === "rejected");
+        let cleanupPending = outcomes.some((outcome) => outcome.status === "rejected");
+        if (!cleanupPending) {
+          try { await this.store.mutate((database) => {
+            database.deletions = database.deletions.filter((pending) => pending.id !== item.id);
+          }); } catch { cleanupPending = true; failed.push("database_ack"); }
+        }
+        if (cleanupPending) this.log("warn", "Deletion cleanup pending id=" + item.id + " steps=" + failed.join(",") + "; retained for retry");
+        results.set(item.id, { archivedWorkspace: archive.status === "fulfilled" ? archive.value : null, cleanupPending });
+      }
+      return results;
+    });
+    this.deletionCleanup = operation.catch(() => undefined);
+    return operation;
+  }
+
+  private scheduleDeletionCleanup(): void {
+    if (this.shuttingDown || this.cleanupTimer || !this.store.read((database) => database.deletions.length)) return;
+    this.cleanupTimer = setTimeout(() => {
+      this.cleanupTimer = null;
+      void this.cleanupDeletions().catch(() => this.log("warn", "Deletion cleanup will retry"))
+        .finally(() => this.scheduleDeletionCleanup());
+    }, 5_000);
+    this.cleanupTimer.unref();
   }
 
   async startAgent(id: string): Promise<Agent> {
@@ -388,9 +438,12 @@ export class AgentService {
   }
 
   async shutdown(): Promise<void> {
+    this.shuttingDown = true;
+    if (this.cleanupTimer) { clearTimeout(this.cleanupTimer); this.cleanupTimer = null; }
     const ids = [...this.activeExecutions.keys()];
     await Promise.all(ids.map((id) => this.cancelExecution(id)));
     await this.outbox.shutdown();
+    await this.deletionCleanup;
   }
 
   /** Refresh delivery without rereading and returning a potentially large span
@@ -520,6 +573,8 @@ export class AgentService {
     return {
       arkConfigured: isArkConfigured(this.config),
       otlpDelivery: this.outbox.status(),
+      deletionCleanup: this.store.read((database) => ({ pendingRecords: database.deletions.length,
+        pendingRuns: database.deletions.reduce((total, item) => total + item.runIds.length, 0) })),
       arkBaseUrl: this.config.arkBaseUrl,
       arkModel: this.config.arkModel || null,
       codexAvailable: await this.runner.isAvailable(),

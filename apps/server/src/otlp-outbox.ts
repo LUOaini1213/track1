@@ -51,6 +51,7 @@ function isoTime(value: number | null): string | null {
 export class OtlpOutbox {
   private readonly directory: string;
   private readonly known = new Map<string, Summary>();
+  private readonly excluded = new Set<string>();
   // A response already received is never sent again merely because persisting
   // its checkpoint failed. Retain that checkpoint and retry disk only.
   private readonly checkpoints = new Map<string, Record>();
@@ -130,7 +131,7 @@ export class OtlpOutbox {
         const directory = await open(this.directory, "r");
         try { await directory.sync(); } finally { await directory.close(); }
       }
-      this.known.set(record.runId, this.summary(record));
+      if (!this.excluded.has(record.runId)) this.known.set(record.runId, this.summary(record));
     } finally {
       await rm(temporary, { force: true });
     }
@@ -204,10 +205,25 @@ export class OtlpOutbox {
     await this.forget([...this.known.keys()].filter((runId) => !runIds.has(runId)));
   }
 
+  orphanRunIds(runIds: Set<string>): string[] {
+    return [...this.known.keys()].filter((runId) => !runIds.has(runId));
+  }
+
+  /** Synchronous exclusion precedes disk cleanup and cannot be undone by an
+   * already queued checkpoint write. The DB journal restores it on restart. */
+  exclude(runIds: string[]): void {
+    for (const runId of runIds) {
+      this.excluded.add(runId);
+      this.known.delete(runId);
+      this.checkpoints.delete(runId);
+      if (this.current?.runId === runId) this.current.controller.abort();
+    }
+  }
+
   async enqueue(runId: string, spans: TraceSpan[]): Promise<void> {
     if (!this.config.otlpEndpoint) return;
     await this.serialize(async () => {
-      if (this.known.has(runId)) return;
+      if (this.excluded.has(runId) || this.known.has(runId)) return;
       const usable = exportableSpans(redactDeep(spans));
       if (!usable.length) return;
       const batches: string[] = [];
@@ -335,14 +351,11 @@ export class OtlpOutbox {
   }
 
   async forget(runIds: string[]): Promise<void> {
+    this.exclude(runIds);
     await this.serialize(async () => {
       // Remove every target from scheduling before attempting any disk delete.
       // Failure deleting the first file must not leave later deleted Runs live.
-      for (const runId of runIds) {
-        this.known.delete(runId);
-        this.checkpoints.delete(runId);
-        if (this.current?.runId === runId) this.current.controller.abort();
-      }
+      this.exclude(runIds);
       const outcomes = await Promise.allSettled(runIds.map((runId) => rm(this.file(runId), { force: true })));
       const failed = runIds.filter((_, index) => outcomes[index]!.status === "rejected");
       if (failed.length) throw new Error("OTLP queue files could not be deleted for Runs: " + failed.join(", "));

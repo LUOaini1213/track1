@@ -116,6 +116,14 @@ export class SpanStore {
     );
   }
 
+  /** A durable deletion journal needs to know whether every file was removed. */
+  async deleteForCleanup(runIds: string[]): Promise<void> {
+    const outcomes = await Promise.allSettled(runIds.map((runId) => rm(this.fileFor(runId), { force: true })));
+    if (outcomes.some((outcome) => outcome.status === "rejected")) {
+      throw new Error("Some deleted Run span files could not be removed");
+    }
+  }
+
   /** Span files whose Run no longer exists, left by an interrupted delete. */
   async orphans(knownRunIds: Set<string>): Promise<string[]> {
     try {
