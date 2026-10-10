@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
   PROTECTED_FIXTURE_CONTENTS,
@@ -95,24 +95,37 @@ export class WorkspaceManager {
    * answered 500 and the record stayed in the list forever. An orphaned
    * directory is recoverable; an Agent that cannot be removed is not.
    */
-  async archive(agent: Agent): Promise<string | null> {
+  archivePath(agentId: string): string {
     const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-    const destination = path.join(
+    return path.join(
       this.root,
       ".deleted",
-      agent.id + "-" + timestamp,
+      agentId + "-" + timestamp,
     );
+  }
+
+  async archive(agent: Pick<Agent, "id" | "workspacePath">, destination = this.archivePath(agent.id), retryBusy = false): Promise<string | null> {
     try {
       await rename(agent.workspacePath, destination);
       return destination;
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code ?? "";
       if (code === "ENOENT") {
-        return null;
+        // ENOENT can also mean the archive parent was removed while the
+        // original workspace still exists. That cleanup must remain pending.
+        try { await stat(agent.workspacePath); }
+        catch (sourceError) {
+          if ((sourceError as NodeJS.ErrnoException).code !== "ENOENT") throw sourceError;
+          // A crash after rename but before journal removal retains the same
+          // archive location rather than inventing a second destination.
+          try { await stat(destination); return destination; }
+          catch (missing) { if ((missing as NodeJS.ErrnoException).code === "ENOENT") return null; throw missing; }
+        }
+        throw error;
       }
       // EPERM/EBUSY on Windows means something still holds the directory open.
       // Report it to the caller rather than blocking the delete.
-      if (["EPERM", "EBUSY", "EACCES"].includes(code)) {
+      if (!retryBusy && ["EPERM", "EBUSY", "EACCES"].includes(code)) {
         return null;
       }
       throw error;

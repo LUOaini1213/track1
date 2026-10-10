@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -15,6 +15,15 @@ afterEach(async () => {
 });
 
 describe("JsonStore", () => {
+  it("rejects a corrupt deletion journal without discarding its on-disk intent", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "launchpad-journal-test-")); temporaryDirectories.push(root);
+    const file = path.join(root, "db.json"), contents = JSON.stringify({ version: 2, agents: [], messages: [], runs: [], deletions: null });
+    await writeFile(file, contents);
+    const store = new JsonStore(file);
+    await expect(store.initialize()).rejects.toThrow();
+    expect(await readFile(file, "utf8")).toBe(contents);
+  });
+
   it("does not publish a mutation in memory when persistence fails", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "launchpad-store-test-"));
     temporaryDirectories.push(root);
