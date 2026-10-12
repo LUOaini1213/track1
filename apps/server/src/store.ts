@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { z } from "zod";
 import type { AgentRun, Database } from "./types.js";
 
 const emptyDatabase = (): Database => ({
@@ -8,7 +9,11 @@ const emptyDatabase = (): Database => ({
   agents: [],
   messages: [],
   runs: [],
+  deletions: [],
 });
+
+const deletionSchema = z.object({ id: z.string().uuid(), runIds: z.array(z.string().uuid()),
+  workspace: z.object({ agentId: z.string().uuid(), workspacePath: z.string(), archivePath: z.string() }).nullable() });
 
 function migrateDatabase(parsed: unknown): Database {
   if (!parsed || typeof parsed !== "object") {
@@ -32,6 +37,7 @@ function migrateDatabase(parsed: unknown): Database {
     agents: candidate.agents,
     messages: candidate.messages,
     runs,
+    deletions: z.array(deletionSchema).parse(candidate.deletions === undefined ? [] : candidate.deletions),
   };
 }
 

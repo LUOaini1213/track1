@@ -81,6 +81,8 @@ export async function createApp(
 
   app.get("/api/system", async () => service.systemInfo());
 
+  app.get("/api/deletion-cleanup", async () => service.deletionCleanupStatus());
+
   app.get("/api/agents", async () => ({ agents: service.listAgents() }));
 
   app.post("/api/agents", async (request, reply) => {

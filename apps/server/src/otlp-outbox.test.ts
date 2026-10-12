@@ -53,6 +53,25 @@ async function record(file: string) { return JSON.parse(await readFile(file, "ut
 const accepted = (response: ServerResponse) => { response.writeHead(200); response.end("{}"); };
 
 describe("durable OTLP outbox over actual HTTP", () => {
+  it("cannot republish an excluded Run from an already queued disk write", async () => {
+    const target = await collector(accepted), { box, file } = await setup(target.endpoint);
+    const deleted = randomUUID(), healthy = randomUUID();
+    const mutable = box as unknown as { write: (record: unknown) => Promise<void> };
+    const originalWrite = mutable.write.bind(box);
+    let release!: () => void, entered!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    mutable.write = async (record) => { entered(); await gate; return originalWrite(record); };
+    const queued = box.enqueue(deleted, spans(deleted)); await started;
+    box.exclude([deleted]); release(); await queued;
+    expect(box.has(deleted)).toBe(false); expect(target.requests).toHaveLength(0);
+    await box.enqueue(deleted, spans(deleted)); expect(box.has(deleted)).toBe(false);
+    mutable.write = originalWrite; await box.enqueue(healthy, spans(healthy));
+    await expect.poll(async () => (await record(file(healthy))).state).toBe("delivered");
+    expect(target.requests).toHaveLength(1); expect(target.requests[0]!.body).not.toContain(deleted);
+    await box.forget([deleted]); await expect(readFile(file(deleted))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("keeps a 503 pending on disk, retries, and compacts the confirmed payload", async () => {
     let healthy = false;
     const target = await collector((response) => healthy ? accepted(response) : (response.writeHead(503), response.end()));

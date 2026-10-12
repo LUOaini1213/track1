@@ -3,6 +3,7 @@ import { api, ApiError, setAuthToken } from "./api";
 import { problemSpans } from "@launchpad/contract";
 import { formatMs, layoutSpans } from "./waterfall";
 import { DeliveryStatus, watchRunDelivery } from "./otlp-delivery";
+import { DeletionCleanupController, DeletionCleanupPanel, initialCleanupView } from "./deletion-cleanup";
 import type {
   Agent,
   AgentRun,
@@ -395,10 +396,15 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [authRequired, setAuthRequired] = useState<boolean | null>(null);
   const [authInput, setAuthInput] = useState("");
+  const [cleanup, setCleanup] = useState(initialCleanupView);
+  const cleanupController = useMemo(() => new DeletionCleanupController(setCleanup), []);
   const messageEnd = useRef<HTMLDivElement>(null);
   const selectedIdRef = useRef<string | null>(null);
   const mountedRef = useRef(true);
   const pollingRunIds = useRef(new Set<string>());
+  const agentRefreshVersion = useRef(0);
+  const agentMutationDepth = useRef(0);
+  const agentDeletions = useRef(new Set<string>());
   selectedIdRef.current = selectedId;
 
   const selected = useMemo(
@@ -407,7 +413,10 @@ export default function App() {
   );
 
   const refreshAgents = useCallback(async () => {
+    const version = ++agentRefreshVersion.current;
     const { agents: next } = await api.listAgents();
+    if (!mountedRef.current || version !== agentRefreshVersion.current || agentMutationDepth.current) return;
+    for (const agent of next) agentDeletions.current.delete(agent.id);
     setAgents(next);
     setSelectedId((current) =>
       current && next.some((agent) => agent.id === current)
@@ -424,8 +433,8 @@ export default function App() {
   }, []);
 
   const bootstrap = useCallback(async () => {
-    await Promise.all([refreshAgents(), api.system().then(setSystem)]);
-  }, [refreshAgents]);
+    await Promise.all([refreshAgents(), api.system().then(setSystem), cleanupController.start()]);
+  }, [refreshAgents, cleanupController]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -439,6 +448,7 @@ export default function App() {
       .catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
     return () => {
       mountedRef.current = false;
+      cleanupController.stop();
     };
   }, [bootstrap]);
 
@@ -487,9 +497,11 @@ export default function App() {
           );
         }
       })
-      .catch((reason) =>
-        setError(reason instanceof Error ? reason.message : String(reason)),
-      );
+      .catch((reason) => {
+        if (reason instanceof ApiError && reason.status === 404
+          && (selectedIdRef.current !== selectedId || agentDeletions.current.has(selectedId))) return;
+        setError(reason instanceof Error ? reason.message : String(reason));
+      });
   }, [refreshMessages, selectedId]);
 
   useEffect(() => {
@@ -563,18 +575,22 @@ export default function App() {
   };
 
   const deleteAgent = async () => {
-    if (!selected) return;
-    if (!window.confirm("Delete " + selected.name + "? Its workspace will be archived.")) {
+    if (!selected || cleanupController.view.retryingId) return;
+    if (!window.confirm("Delete " + selected.name + "? Its record will be removed and workspace cleanup will be scheduled.")) {
       return;
     }
     setBusy(true);
     setError(null);
+    ++agentRefreshVersion.current;
+    ++agentMutationDepth.current;
+    agentDeletions.current.add(selected.id);
     try {
-      await api.deleteAgent(selected.id);
-      await refreshAgents();
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      await cleanupController.remove(selected.id, selected.name);
+    } catch {
+      setError("Deletion could not be confirmed. Refresh cleanup status before trying again.");
     } finally {
+      --agentMutationDepth.current;
+      await refreshAgents().catch(() => setError("The Agent list could not be refreshed after deletion."));
       setBusy(false);
     }
   };
@@ -596,6 +612,7 @@ export default function App() {
           // this loop for good: activeRun stayed "running", so the spinner never
           // stopped and the composer stayed disabled until the page reloaded.
           if (reason instanceof ApiError && [401, 404].includes(reason.status)) {
+            if (reason.status === 404 && (agentDeletions.current.has(agentId) || selectedIdRef.current !== agentId)) return;
             throw reason;
           }
           consecutiveFailures += 1;
@@ -811,6 +828,11 @@ export default function App() {
           </div>
         )}
 
+        <DeletionCleanupPanel view={cleanup}
+          onRetry={(id) => { void cleanupController.remove(id, undefined, true); }}
+          onRefresh={() => { void cleanupController.refresh(); }}
+          onDismiss={() => cleanupController.dismiss()} />
+
         {selected ? (
           <>
             <header className="agent-header">
@@ -839,7 +861,7 @@ export default function App() {
                 <button
                   className="button button-danger"
                   onClick={deleteAgent}
-                  disabled={busy || selected.status === "busy"}
+                  disabled={busy || selected.status === "busy" || !!cleanup.retryingId}
                 >
                   Delete
                 </button>
