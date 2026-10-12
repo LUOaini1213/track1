@@ -1,6 +1,8 @@
 import type {
   Agent,
   AgentRun,
+  DeleteAgentResult,
+  DeletionCleanupEntry,
   Message,
   RunCompareSide,
   RunOtlpDelivery,
@@ -43,6 +45,7 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
 export const api = {
   auth: () => request<{ required: boolean }>("/api/auth"),
   system: () => request<SystemInfo>("/api/system"),
+  deletionCleanup: () => request<{ pending: DeletionCleanupEntry[] }>("/api/deletion-cleanup"),
   listAgents: () => request<{ agents: Agent[] }>("/api/agents"),
   createAgent: (body: {
     name: string;
@@ -62,7 +65,7 @@ export const api = {
       body: JSON.stringify(body),
     }),
   deleteAgent: (id: string) =>
-    request<{ archivedWorkspace: string }>("/api/agents/" + id, {
+    request<DeleteAgentResult>("/api/agents/" + id, {
       method: "DELETE",
     }),
   startAgent: (id: string) =>

@@ -207,6 +207,15 @@ export class AgentService {
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
   }
 
+  deletionCleanupStatus() {
+    // Never expose the journal itself: it contains workspace/archive paths.
+    return { pending: this.store.read((database) => database.deletions.map((item) => ({
+      id: item.id,
+      kind: item.workspace ? "agent" as const : "orphan_traces" as const,
+      runCount: item.runIds.length,
+    }))) };
+  }
+
   getAgent(id: string): Agent {
     const agent = this.store.read((database) =>
       database.agents.find((item) => item.id === id),

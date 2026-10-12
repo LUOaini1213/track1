@@ -49,6 +49,43 @@ or multi-writer guarantee. Corrupt/unwritable main databases and inaccessible
 storage directories can still prevent startup. Pending cleanup remains visible
 until the underlying filesystem problem is fixed.
 
+## Browser status and retry
+
+The Playground reports Agent record removal separately from final workspace and
+trace cleanup. A pending task keeps a **Retry cleanup** action bound to its own ID,
+including after a page reload or server restart. The browser reads the authenticated
+`GET /api/deletion-cleanup` endpoint: `{ pending: [{ id, kind, runCount }] }`.
+`kind` distinguishes deleted Agents from legacy orphan trace cleanup. This explicit
+allowlist excludes prompts, Agent names, individual Run IDs, collector credentials,
+and workspace/archive paths. No cleanup journal is copied to browser storage.
+
+While tasks remain pending, the browser checks the compact endpoint every five
+seconds, one read at a time. Network/invalid responses retain the last observation;
+authentication failure stops automatic reads until an explicit refresh. A deleted
+Agent is never restored to the list from a stale pre-delete response. A pending
+receipt also invalidates any status snapshot captured before the deletion committed.
+
+Before retrying, the browser freshly checks both the pending journal and the Agent
+list. It does not issue DELETE if that ID now belongs to a present Agent. Automatic
+cleanup can finish between the checks and DELETE; the resulting 404 is considered
+complete only after another successful query confirms both absence from the journal
+and absence from the Agent list. Failed queries cannot confirm completion. Retries
+are single-flight, and errors shown in this panel omit server error bodies and paths.
+
+Older servers may have neither this endpoint nor the `cleanupPending` receipt field.
+Their valid DELETE response still confirms record removal, but the browser labels
+cleanup completion as unavailable until it can obtain a valid cleanup snapshot.
+An unavailable endpoint does not fabricate an empty journal or a completed task.
+
+For a zero-key local walkthrough, run `npm run build` then `npm run demo:cleanup`.
+Open the printed loopback URL and delete the disposable demo Agent. This instance
+injects an archive `EACCES` against real temporary JSON/workspace files; it changes
+no OS permissions. Reload to recover the pending row, then click **Retry cleanup**:
+the next manual DELETE lifts the injected failure and performs the real archive.
+Enter `quit` or press Ctrl+C to remove the temporary demo files. The runner is
+prohibited from making model calls. This is a controlled failure demonstration,
+not a claim that the fixture reproduced every host filesystem failure.
+
 Regression coverage uses real JSON/span/outbox files, Fastify requests and a
 loopback HTTP collector with injected file-specific permission errors. It
 checks persisted deletion intent, archive progress despite unlink failures,

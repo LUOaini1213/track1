@@ -40,6 +40,12 @@ rejected and uncertain span counts separately from task execution. Further
 [collector fault modes and delivery semantics](docs/OTLP_DELIVERY.md#per-run-visibility)
 are available in the same zero-key demo.
 
+For a deletion recovery walkthrough, build once and run `npm run demo:cleanup`.
+Delete its disposable Agent, reload to see the persisted pending cleanup, then use
+**Retry cleanup**. The loopback demo injects a controlled archive permission error
+against temporary files and never runs a model. See
+[cleanup status, retry and compatibility](docs/DELETION_RECOVERY.md#browser-status-and-retry).
+
 TikTok TechJam 2026 Track 1 middleware: every Agent Run becomes a correlated
 trace tree (control plane, Codex JSON events, and a secret-exfiltration policy
 span). The browser Playground, Agent CRUD, Codex Runtime, and ECS path come

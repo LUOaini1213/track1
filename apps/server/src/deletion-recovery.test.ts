@@ -86,6 +86,27 @@ async function collector() {
 }
 
 describe("recoverable Agent deletion through real storage and HTTP", () => {
+  it("exposes only authenticated safe cleanup summaries after a restart, then removes a completed task", async () => {
+    const configuration = { ...await config(), authToken: "cleanup-test-token" }, first = await open(configuration);
+    const removed = await first.service.createAgent({ name: "private-agent-name", instructions: "private-instructions" });
+    const runId = await seed(first, removed.id); faults.archive.add(removed.workspacePath);
+    const receipt = await first.service.deleteAgent(removed.id);
+    expect(receipt).toEqual({ archivedWorkspace: null, cleanupPending: true });
+    await first.service.shutdown(); const restarted = await open(configuration);
+    expect((await restarted.app.inject({ method: "GET", url: "/api/deletion-cleanup" })).statusCode).toBe(401);
+    const headers = { authorization: "Bearer cleanup-test-token" };
+    const response = await restarted.app.inject({ method: "GET", url: "/api/deletion-cleanup", headers });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ pending: [{ id: removed.id, kind: "agent", runCount: 1 }] });
+    for (const secret of [removed.workspacePath, configuration.dataDirectory, runId, "private-agent-name", "private-instructions", "cleanup-test-token"]) {
+      expect(response.body).not.toContain(secret);
+    }
+    faults.archive.clear();
+    const retry = await restarted.app.inject({ method: "DELETE", url: "/api/agents/" + removed.id, headers });
+    expect(retry.statusCode).toBe(200); expect(retry.json().cleanupPending).toBe(false);
+    expect((await restarted.app.inject({ method: "GET", url: "/api/deletion-cleanup", headers })).json()).toEqual({ pending: [] });
+  });
+
   it("rejects admissions queued before DELETE when their store mutation begins afterward", async () => {
     const configuration = await config(), context = await open(configuration), agent = await context.service.createAgent({ name: "Queued admission" });
     let entered!: () => void, release!: () => void;
@@ -253,6 +274,8 @@ describe("recoverable Agent deletion through real storage and HTTP", () => {
     const upgraded = await open(configuration);
     expect(upgraded.service.listAgents().map((a) => a.id)).toEqual([healthy.id]);
     expect(upgraded.store.snapshot().deletions[0]).toMatchObject({ runIds: [orphan], workspace: null });
+    const cleanup = (await upgraded.app.inject({ method: "GET", url: "/api/deletion-cleanup" })).json();
+    expect(cleanup).toEqual({ pending: [{ id: upgraded.store.snapshot().deletions[0]!.id, kind: "orphan_traces", runCount: 1 }] });
     expect(outbox(upgraded.service).has(orphan)).toBe(false); expect(target.received).toEqual([]);
     await upgraded.service.shutdown(); faults.unlink.clear();
     const recovered = await open(configuration); expect(recovered.store.snapshot().deletions).toEqual([]);
