@@ -14,3 +14,4 @@
 export * from "./types.js";
 export * from "./cost.js";
 export * from "./run-compare.js";
+export * from "./replay-demo.js";

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError, setAuthToken } from "./api";
 import { problemSpans } from "@launchpad/contract";
+import { runtimeConfigWarning, starterPromptsFor } from "./system";
 import { formatMs, layoutSpans } from "./waterfall";
 import { DeliveryStatus, watchRunDelivery } from "./otlp-delivery";
 import { DeletionCleanupController, DeletionCleanupPanel, initialCleanupView } from "./deletion-cleanup";
@@ -13,12 +14,6 @@ import type {
   SystemInfo,
   TraceSpan,
 } from "./types";
-
-const starterPrompts = [
-  "Create a small TypeScript CLI that prints a weather summary from sample JSON.",
-  "Inspect this workspace and explain what you would improve first.",
-  "Build a responsive single-page todo app with tests.",
-];
 
 const emptyForm = {
   name: "",
@@ -48,15 +43,12 @@ function Spinner() {
 }
 
 export function RuntimeConfigBanner({ system }: { system: SystemInfo | null }) {
-  if (!system || system.replay || system.runtimeProvider === "replay" || (system.arkConfigured && system.codexAvailable)) return null;
+  const warning = runtimeConfigWarning(system);
+  if (!warning) return null;
   return <div className="config-banner">
     <span>!</span>
     <div><strong>Runtime configuration needed</strong>
-      <p>{!system.arkConfigured
-        ? "Set ARK_API_KEY and ARK_MODEL in .env before using the Playground."
-        : system.runtimeProvider === "container"
-          ? "The local container engine or Agent Runtime image is unavailable. Rerun npm run poc."
-          : "Codex CLI was not found. Use the Docker image or install @openai/codex."}</p>
+      <p>{warning}</p>
     </div>
   </div>;
 }
@@ -942,7 +934,7 @@ export default function App() {
                       same Codex session across messages.
                     </p>
                     <div className="prompt-grid">
-                      {starterPrompts.map((item) => (
+                      {starterPromptsFor(system).map((item) => (
                         <button key={item} onClick={() => setPrompt(item)}>
                           <span>↗</span>
                           {item}
