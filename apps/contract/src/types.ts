@@ -78,3 +78,22 @@ export interface AgentRun {
   traceId: string;
   spans: TraceSpan[];
 }
+
+/** Safe per-Run collector acknowledgments. No destination, credentials or raw
+ * collector responses cross the browser boundary. Run execution stays separate. */
+export interface RunOtlpDelivery {
+  state: "disabled" | "awaiting_completion" | "pending" | "paused" | "delivered"
+    | "partial" | "rejected" | "uncertain" | "recovery_needed" | "unavailable";
+  acceptedSpans: number;
+  rejectedSpans: number;
+  uncertainSpans: number;
+  warningBatches: number;
+  attempts: number;
+  pendingBatches: number;
+  queuedAt: string | null;
+  settledAt: string | null;
+  nextRetryAt: string | null;
+  checkpointPending: boolean;
+  recoveryPossible: boolean;
+  corruptionEvidence: boolean;
+}

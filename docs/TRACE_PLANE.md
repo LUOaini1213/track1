@@ -103,15 +103,24 @@ adopt. `OTEL_EXPORTER_OTLP_HEADERS` carries credentials in the standard
 comma-separated `key=value` form.
 
 Two mapping notes. OTLP ids are 16 and 8 raw bytes; ours are UUIDs, so they are
-hashed to that width — deterministically, so re-exporting a Run updates its
-trace rather than creating a second one. And OTLP's `kind` describes a call's
+hashed to that width deterministically. Retries keep those ids; receiver-side
+deduplication is backend-specific and is not guaranteed by OTLP. OTLP's `kind` describes a call's
 role rather than the work's category, so `execute_tool` and `chat` spans are
 CLIENT, everything else is INTERNAL, and our own taxonomy travels as the
 `launchpad.span.kind` attribute.
 
-Export is best effort and runs after the Run's own record is durable: an
-unreachable collector logs a warning and never turns a finished Run into a
-failed one.
+Final traces are durably queued under `APP_DATA_DIR/otlp-outbox` before Run
+publication. HTTP sends happen in one background worker; collector latency
+does not delay a Run verdict. Each batch confirmation is checkpointed, so
+restart resumes at the first unconfirmed batch. HTTP 429/502/503/504 and
+connection faults retry with exponential backoff and jitter. Populated partial
+success and other 4xx/5xx are terminal under the OTLP rules: they are not resent,
+and rejection/uncertainty counters survive restart. Local spans remain readable.
+
+`GET /api/system` exposes `otlpDelivery` counts for pending, delivered, partial,
+rejected and uncertain Runs, plus rejected/uncertain spans and queue age. See
+[OTLP_DELIVERY.md](OTLP_DELIVERY.md) for crash ambiguity, destination pinning,
+disk-fault behavior, migration, verification and measured overhead.
 
 ## Demo
 

@@ -10,6 +10,14 @@ const base = {
 };
 
 describe("configuration", () => {
+  it("keeps collector credentials in headers and normalizes retry bounds", () => {
+    expect(loadConfig({ ...base, OTEL_EXPORTER_OTLP_ENDPOINT: "" }).otlpEndpoint).toBe("");
+    for (const endpoint of ["http://user:password@localhost:4318", "http://localhost:4318?token=secret", "http://localhost:4318#token"]) {
+      expect(() => loadConfig({ ...base, OTEL_EXPORTER_OTLP_ENDPOINT: endpoint })).toThrow(/credentials/);
+    }
+    const config = loadConfig({ ...base, OTEL_EXPORTER_OTLP_RETRY_INITIAL_MS: "1000", OTEL_EXPORTER_OTLP_RETRY_MAX_MS: "100" });
+    expect(config.otlpRetryMaxMs).toBe(1000);
+  });
   it("binds loopback by default so no token is needed for a local server", () => {
     const config = loadConfig({ ...base });
     expect(config.host).toBe("127.0.0.1");

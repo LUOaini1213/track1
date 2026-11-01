@@ -1,0 +1,31 @@
+{
+  "result": "PASS",
+  "faultModes": [
+    "HTTP 503",
+    "HTTP timeout",
+    "SIGKILL restart"
+  ],
+  "acknowledgedRunNotResent": true,
+  "restoredPayloadsByteIdentical": true,
+  "perRunAcknowledgmentsPublished": true,
+  "terminalRuns": 2,
+  "collectorRequests": 4,
+  "delivery": {
+    "enabled": true,
+    "pending": 0,
+    "quarantinedRecords": 0,
+    "delivered": 2,
+    "partial": 0,
+    "rejected": 0,
+    "uncertain": 0,
+    "rejectedSpans": 0,
+    "uncertainSpans": 0,
+    "warningBatches": 0,
+    "pausedDestination": 0,
+    "oldestPendingAgeMs": null
+  },
+  "runtime": "v24.18.0",
+  "platform": "win32",
+  "sourceCommit": "c6ff89c04912a7967535b0887a2c4161aa7280f0",
+  "measuredAt": "2026-10-09T10:58:03.0001642Z"
+}

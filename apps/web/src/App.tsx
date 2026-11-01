@@ -3,11 +3,14 @@ import { api, ApiError, setAuthToken } from "./api";
 import { problemSpans } from "@launchpad/contract";
 import { runtimeConfigWarning, starterPromptsFor } from "./system";
 import { formatMs, layoutSpans } from "./waterfall";
+import { DeliveryStatus, watchRunDelivery } from "./otlp-delivery";
+import { DeletionCleanupController, DeletionCleanupPanel, initialCleanupView } from "./deletion-cleanup";
 import type {
   Agent,
   AgentRun,
   Message,
   RunCompareSide,
+  RunOtlpDelivery,
   SystemInfo,
   TraceSpan,
 } from "./types";
@@ -37,6 +40,17 @@ function StatusPill({ status }: { status: Agent["status"] }) {
 
 function Spinner() {
   return <span className="spinner" aria-label="Loading" />;
+}
+
+export function RuntimeConfigBanner({ system }: { system: SystemInfo | null }) {
+  const warning = runtimeConfigWarning(system);
+  if (!warning) return null;
+  return <div className="config-banner">
+    <span>!</span>
+    <div><strong>Runtime configuration needed</strong>
+      <p>{warning}</p>
+    </div>
+  </div>;
 }
 
 type TraceFilter =
@@ -69,6 +83,8 @@ function TracePanel({
   estimatedCostUsd,
   previousUsage,
   compare,
+  delivery,
+  deliveryError,
   onExport,
 }: {
   spans: TraceSpan[];
@@ -78,6 +94,8 @@ function TracePanel({
   estimatedCostUsd: number | null;
   previousUsage: AgentRun["usage"];
   compare: { left: RunCompareSide; right: RunCompareSide } | null;
+  delivery: RunOtlpDelivery | null;
+  deliveryError: string | null;
   onExport: () => void;
 }) {
   const [filter, setFilter] = useState<TraceFilter>("all");
@@ -226,6 +244,7 @@ function TracePanel({
           </button>
         </div>
       </div>
+      <DeliveryStatus delivery={delivery} refreshError={deliveryError} />
       <div className="trace-filters" role="group" aria-label="Span filter">
         {(
           ["all", "problems", "llm", "tool", "policy", "sandbox"] as TraceFilter[]
@@ -354,6 +373,8 @@ export default function App() {
   const [form, setForm] = useState(emptyForm);
   const [prompt, setPrompt] = useState("");
   const [activeRun, setActiveRun] = useState<AgentRun | null>(null);
+  const [delivery, setDelivery] = useState<RunOtlpDelivery | null>(null);
+  const [deliveryError, setDeliveryError] = useState<string | null>(null);
   const [spans, setSpans] = useState<TraceSpan[]>([]);
   const [selectedSpanId, setSelectedSpanId] = useState<string | null>(null);
   const [runUsage, setRunUsage] = useState<AgentRun["usage"]>(null);
@@ -367,10 +388,15 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [authRequired, setAuthRequired] = useState<boolean | null>(null);
   const [authInput, setAuthInput] = useState("");
+  const [cleanup, setCleanup] = useState(initialCleanupView);
+  const cleanupController = useMemo(() => new DeletionCleanupController(setCleanup), []);
   const messageEnd = useRef<HTMLDivElement>(null);
   const selectedIdRef = useRef<string | null>(null);
   const mountedRef = useRef(true);
   const pollingRunIds = useRef(new Set<string>());
+  const agentRefreshVersion = useRef(0);
+  const agentMutationDepth = useRef(0);
+  const agentDeletions = useRef(new Set<string>());
   selectedIdRef.current = selectedId;
 
   const selected = useMemo(
@@ -378,10 +404,11 @@ export default function App() {
     [agents, selectedId],
   );
 
-  const configWarning = runtimeConfigWarning(system);
-
   const refreshAgents = useCallback(async () => {
+    const version = ++agentRefreshVersion.current;
     const { agents: next } = await api.listAgents();
+    if (!mountedRef.current || version !== agentRefreshVersion.current || agentMutationDepth.current) return;
+    for (const agent of next) agentDeletions.current.delete(agent.id);
     setAgents(next);
     setSelectedId((current) =>
       current && next.some((agent) => agent.id === current)
@@ -398,8 +425,8 @@ export default function App() {
   }, []);
 
   const bootstrap = useCallback(async () => {
-    await Promise.all([refreshAgents(), api.system().then(setSystem)]);
-  }, [refreshAgents]);
+    await Promise.all([refreshAgents(), api.system().then(setSystem), cleanupController.start()]);
+  }, [refreshAgents, cleanupController]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -413,11 +440,14 @@ export default function App() {
       .catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
     return () => {
       mountedRef.current = false;
+      cleanupController.stop();
     };
   }, [bootstrap]);
 
   useEffect(() => {
     setActiveRun(null);
+    setDelivery(null);
+    setDeliveryError(null);
     setSpans([]);
     setSelectedSpanId(null);
     setRunUsage(null);
@@ -440,6 +470,7 @@ export default function App() {
             setSpans(trace.spans);
             setRunUsage(trace.usage);
             setEstimatedCostUsd(trace.estimatedCostUsd);
+            setDelivery(trace.delivery);
           }
           const previous = result.runs[1];
           setPreviousUsage(previous?.usage ?? null);
@@ -458,10 +489,17 @@ export default function App() {
           );
         }
       })
-      .catch((reason) =>
-        setError(reason instanceof Error ? reason.message : String(reason)),
-      );
+      .catch((reason) => {
+        if (reason instanceof ApiError && reason.status === 404
+          && (selectedIdRef.current !== selectedId || agentDeletions.current.has(selectedId))) return;
+        setError(reason instanceof Error ? reason.message : String(reason));
+      });
   }, [refreshMessages, selectedId]);
+
+  useEffect(() => {
+    if (!activeRun || ["queued", "running"].includes(activeRun.status)) return;
+    return watchRunDelivery(activeRun.id, delivery, setDelivery, setDeliveryError);
+  }, [activeRun?.id, activeRun?.status, delivery]);
 
   useEffect(() => {
     if (selected) {
@@ -529,18 +567,22 @@ export default function App() {
   };
 
   const deleteAgent = async () => {
-    if (!selected) return;
-    if (!window.confirm("Delete " + selected.name + "? Its workspace will be archived.")) {
+    if (!selected || cleanupController.view.retryingId) return;
+    if (!window.confirm("Delete " + selected.name + "? Its record will be removed and workspace cleanup will be scheduled.")) {
       return;
     }
     setBusy(true);
     setError(null);
+    ++agentRefreshVersion.current;
+    ++agentMutationDepth.current;
+    agentDeletions.current.add(selected.id);
     try {
-      await api.deleteAgent(selected.id);
-      await refreshAgents();
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      await cleanupController.remove(selected.id, selected.name);
+    } catch {
+      setError("Deletion could not be confirmed. Refresh cleanup status before trying again.");
     } finally {
+      --agentMutationDepth.current;
+      await refreshAgents().catch(() => setError("The Agent list could not be refreshed after deletion."));
       setBusy(false);
     }
   };
@@ -562,6 +604,7 @@ export default function App() {
           // this loop for good: activeRun stayed "running", so the spinner never
           // stopped and the composer stayed disabled until the page reloaded.
           if (reason instanceof ApiError && [401, 404].includes(reason.status)) {
+            if (reason.status === 404 && (agentDeletions.current.has(agentId) || selectedIdRef.current !== agentId)) return;
             throw reason;
           }
           consecutiveFailures += 1;
@@ -581,6 +624,8 @@ export default function App() {
           setSpans(trace.spans);
           setRunUsage(trace.usage);
           setEstimatedCostUsd(trace.estimatedCostUsd);
+          setDelivery(trace.delivery);
+          setDeliveryError(null);
         }
         if (!["queued", "running"].includes(trace.run.status)) {
           await Promise.all([refreshMessages(agentId), refreshAgents()]);
@@ -622,6 +667,8 @@ export default function App() {
         setPreviousUsage(activeRun?.usage ?? null);
         setRunCompare(null);
         setActiveRun(result.run);
+        setDelivery(null);
+        setDeliveryError(null);
         setSpans(result.run.spans ?? []);
         setSelectedSpanId(null);
       }
@@ -764,15 +811,7 @@ export default function App() {
       </aside>
 
       <main className="main">
-        {configWarning ? (
-          <div className="config-banner">
-            <span>!</span>
-            <div>
-              <strong>Runtime configuration needed</strong>
-              <p>{configWarning}</p>
-            </div>
-          </div>
-        ) : null}
+        <RuntimeConfigBanner system={system} />
 
         {error && (
           <div className="error-banner" role="alert">
@@ -780,6 +819,11 @@ export default function App() {
             <button onClick={() => setError(null)}>×</button>
           </div>
         )}
+
+        <DeletionCleanupPanel view={cleanup}
+          onRetry={(id) => { void cleanupController.remove(id, undefined, true); }}
+          onRefresh={() => { void cleanupController.refresh(); }}
+          onDismiss={() => cleanupController.dismiss()} />
 
         {selected ? (
           <>
@@ -809,7 +853,7 @@ export default function App() {
                 <button
                   className="button button-danger"
                   onClick={deleteAgent}
-                  disabled={busy || selected.status === "busy"}
+                  disabled={busy || selected.status === "busy" || !!cleanup.retryingId}
                 >
                   Delete
                 </button>
@@ -930,7 +974,7 @@ export default function App() {
                 <div ref={messageEnd} />
               </div>
 
-              {spans.length > 0 ? (
+              {activeRun ? (
                 <TracePanel
                   spans={spans}
                   selectedId={selectedSpanId}
@@ -939,12 +983,15 @@ export default function App() {
                   estimatedCostUsd={estimatedCostUsd}
                   previousUsage={previousUsage}
                   compare={runCompare}
+                  delivery={delivery}
+                  deliveryError={deliveryError}
                   onExport={() => {
                     const payload = {
                       run: activeRun,
                       spans,
                       usage: runUsage,
                       estimatedCostUsd,
+                      delivery,
                     };
                     const blob = new Blob([JSON.stringify(payload, null, 2)], {
                       type: "application/json",

@@ -1,8 +1,11 @@
 import type {
   Agent,
   AgentRun,
+  DeleteAgentResult,
+  DeletionCleanupEntry,
   Message,
   RunCompareSide,
+  RunOtlpDelivery,
   SystemInfo,
   TraceSpan,
 } from "./types";
@@ -42,6 +45,7 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
 export const api = {
   auth: () => request<{ required: boolean }>("/api/auth"),
   system: () => request<SystemInfo>("/api/system"),
+  deletionCleanup: () => request<{ pending: DeletionCleanupEntry[] }>("/api/deletion-cleanup"),
   listAgents: () => request<{ agents: Agent[] }>("/api/agents"),
   createAgent: (body: {
     name: string;
@@ -61,7 +65,7 @@ export const api = {
       body: JSON.stringify(body),
     }),
   deleteAgent: (id: string) =>
-    request<{ archivedWorkspace: string }>("/api/agents/" + id, {
+    request<DeleteAgentResult>("/api/agents/" + id, {
       method: "DELETE",
     }),
   startAgent: (id: string) =>
@@ -92,7 +96,9 @@ export const api = {
       spans: TraceSpan[];
       usage: AgentRun["usage"];
       estimatedCostUsd: number | null;
+      delivery: RunOtlpDelivery;
     }>("/api/runs/" + id + "/trace"),
+  runDelivery: (id: string) => request<{ delivery: RunOtlpDelivery }>("/api/runs/" + id + "/delivery"),
   compareRuns: (agentId: string, left?: string, right?: string) => {
     const query = new URLSearchParams();
     if (left) query.set("left", left);

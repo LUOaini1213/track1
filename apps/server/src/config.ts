@@ -30,10 +30,19 @@ const envSchema = z.object({
   COST_INPUT_USD_PER_MTOK: z.coerce.number().nonnegative().optional(),
   COST_OUTPUT_USD_PER_MTOK: z.coerce.number().nonnegative().optional(),
   // OTLP/HTTP export. Unset means no export; the trace endpoint is unaffected.
-  OTEL_EXPORTER_OTLP_ENDPOINT: z.string().url().optional(),
+  OTEL_EXPORTER_OTLP_ENDPOINT: z.preprocess((value) => value === "" ? undefined : value,
+    z.string().url().refine((value) => {
+      try {
+        const url = new URL(value);
+        return ["http:", "https:"].includes(url.protocol) && !url.username && !url.password && !url.search && !url.hash;
+      } catch { return false; }
+    }, "OTLP endpoint must not contain credentials, a query or a fragment; use OTEL_EXPORTER_OTLP_HEADERS").optional()),
   OTEL_EXPORTER_OTLP_HEADERS: z.string().optional(),
   OTEL_SERVICE_NAME: z.string().default("launchpad-trace-plane"),
   OTEL_EXPORTER_OTLP_TIMEOUT: z.coerce.number().int().min(100).default(5_000),
+  OTEL_EXPORTER_OTLP_RETRY_INITIAL_MS: z.coerce.number().int().min(100).default(1_000),
+  OTEL_EXPORTER_OTLP_RETRY_MAX_MS: z.coerce.number().int().min(100).default(60_000),
+  OTEL_EXPORTER_OTLP_MAX_RESPONSE_BYTES: z.coerce.number().int().min(1024).max(4_194_304).default(65_536),
   // Collectors and vendors default to a 4MB body; stay under it.
   OTEL_EXPORTER_OTLP_MAX_BATCH_BYTES: z.coerce
     .number()
@@ -114,6 +123,9 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
     otlpEndpoint: env.OTEL_EXPORTER_OTLP_ENDPOINT ?? "",
     otlpServiceName: env.OTEL_SERVICE_NAME,
     otlpTimeoutMs: env.OTEL_EXPORTER_OTLP_TIMEOUT,
+    otlpRetryInitialMs: env.OTEL_EXPORTER_OTLP_RETRY_INITIAL_MS,
+    otlpRetryMaxMs: Math.max(env.OTEL_EXPORTER_OTLP_RETRY_INITIAL_MS, env.OTEL_EXPORTER_OTLP_RETRY_MAX_MS),
+    otlpMaxResponseBytes: env.OTEL_EXPORTER_OTLP_MAX_RESPONSE_BYTES,
     otlpMaxBatchBytes: env.OTEL_EXPORTER_OTLP_MAX_BATCH_BYTES,
     // Standard OTEL_EXPORTER_OTLP_HEADERS form: comma-separated key=value.
     otlpHeaders: Object.fromEntries(

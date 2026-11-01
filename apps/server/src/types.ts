@@ -11,6 +11,15 @@ export interface Database {
   agents: Agent[];
   messages: Message[];
   runs: AgentRun[];
+  deletions: PendingDeletion[];
+}
+
+/** Committed in the same mutation that removes the Agent. Contains no prompts
+ * or credentials. A null workspace represents orphan trace cleanup on upgrade. */
+export interface PendingDeletion {
+  id: string;
+  runIds: string[];
+  workspace: { agentId: string; workspacePath: string; archivePath: string } | null;
 }
 
 export interface CreateAgentInput {

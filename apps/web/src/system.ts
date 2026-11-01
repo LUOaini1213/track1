@@ -36,7 +36,7 @@ export function starterPromptsFor(system: SystemInfo | null): string[] {
  * key they do not need.
  */
 export function runtimeConfigWarning(system: SystemInfo | null): string | null {
-  if (!system || system.replay) {
+  if (!system || system.replay || system.runtimeProvider === "replay") {
     return null;
   }
   if (!system.arkConfigured) {

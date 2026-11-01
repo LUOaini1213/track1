@@ -81,6 +81,8 @@ export async function createApp(
 
   app.get("/api/system", async () => service.systemInfo());
 
+  app.get("/api/deletion-cleanup", async () => service.deletionCleanupStatus());
+
   app.get("/api/agents", async () => ({ agents: service.listAgents() }));
 
   app.post("/api/agents", async (request, reply) => {
@@ -151,6 +153,11 @@ export async function createApp(
   app.get("/api/runs/:id/trace", async (request) => {
     const { id } = runIdParams.parse(request.params);
     return service.getTrace(id);
+  });
+
+  app.get("/api/runs/:id/delivery", async (request) => {
+    const { id } = runIdParams.parse(request.params);
+    return { delivery: await service.getRunDelivery(id) };
   });
 
   // Registered BEFORE the static plugin. `await app.register(fastifyStatic)`
