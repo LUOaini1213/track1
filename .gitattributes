@@ -1,0 +1,10 @@
+# Text is stored and checked out with LF on every platform, so the source
+# hashes in docs/evidence/*.json and the shell scripts behave the same on
+# Windows and Linux. Images are binary and never normalized.
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary

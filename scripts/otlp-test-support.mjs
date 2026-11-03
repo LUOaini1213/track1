@@ -54,8 +54,11 @@ export async function start(root, extra = {}) {
     if (child.exitCode !== null || child.signalCode !== null) return;
     const exited = once(child, "exit"); child.kill(hard ? "SIGKILL" : "SIGTERM"); await exited;
   };
+  // A cold start right after `npm run build` (module cache empty, antivirus
+  // scanning new files) took longer than 15 s once on Windows; the deadline
+  // only bounds a server that never comes up.
   try {
-    await until(async () => { assert(child.exitCode === null, log); return (await request("/api/health")).ok; }, "server ready");
+    await until(async () => { assert(child.exitCode === null, log); return (await request("/api/health")).ok; }, "server ready", 60_000);
   } catch (error) { await stop(true); throw new Error(String(error) + "\n" + log); }
   return { child, request, stop, url: `http://127.0.0.1:${port}` };
 }

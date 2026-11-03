@@ -39,9 +39,13 @@ const READ_INTENT =
  * Asking to move it somewhere. Separated from READ_INTENT because the two
  * describe different acts: one puts the secret on screen, the other puts it
  * somewhere it outlives the Run.
+ *
+ * The "how to" exclusion: in "write a section on how to set OPENAI_API_KEY"
+ * the `to` introduces an instruction, not a destination, and that prompt was
+ * denied as egress. "write the key to notes.txt" still matches.
  */
 const EGRESS_INTENT =
-  /\b(base64|encode|obfuscat\w*|upload|post|send|curl|wget|fetch|webhook|commit|push|paste|exfiltrat\w*|(write|save|append|copy|store)\b[^.]{0,40}\b(to|into|in)\b)\b/i;
+  /\b(base64|encode|obfuscat\w*|upload|post|send|curl|wget|fetch|webhook|commit|push|paste|exfiltrat\w*|(write|save|append|copy|store)\b[^.]{0,40}\b(?<!\bhow )(to|into|in)\b)\b/i;
 
 /**
  * Getting at a file's bytes by any of the usual routes: pagers and filters
@@ -72,6 +76,63 @@ const ENV_DUMP: RegExp[] = [
   /\{\s*\*\*os\.environ\s*\}/,
 ];
 
+const PROTECTED_DIR = PROTECTED_FIXTURE_RELATIVE.split(/[\\/]/)[0]!;
+
+/** Escape a literal for use inside a RegExp source. */
+const literal = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/** Translate one shell glob word (`*`, `?`, `[...]`, `{a,b}`) to a RegExp. */
+function globToRegExp(word: string): RegExp | null {
+  let source = "";
+  for (let index = 0; index < word.length; index += 1) {
+    const char = word[index]!;
+    if (char === "*") {
+      source += ".*";
+    } else if (char === "?") {
+      source += ".";
+    } else if (char === "[" || char === "{") {
+      const end = word.indexOf(char === "[" ? "]" : "}", index + 1);
+      if (end === -1) {
+        source += literal(char);
+        continue;
+      }
+      const body = word.slice(index + 1, end);
+      source +=
+        char === "["
+          ? "[" + body.replace(/^!/, "^").replace(/\\/g, "\\\\") + "]"
+          : "(?:" + body.split(",").map(literal).join("|") + ")";
+      index = end;
+    } else {
+      source += literal(char);
+    }
+  }
+  try {
+    return new RegExp("^" + source + "$", "i");
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A shell glob that would expand to the protected directory, such as
+ * `.secr*`, `.s?crets`, `.[s]ecrets` or `.{secrets,x}`. Only dot-words that
+ * contain a glob character and at least one letter count, so a regex such as
+ * `.*` in a prompt is not mistaken for one. A bare `.*` directory glob in
+ * front of `demo.env` is still caught by the `demo.env` rule.
+ */
+function globReachesProtectedDir(text: string): boolean {
+  for (const match of text.matchAll(/(?:^|[\s'"`=(:])(\.[^\s'"`\\/;|&()<>]+)/g)) {
+    const word = match[1]!;
+    if (!/[*?[{]/.test(word) || !/[a-z]/i.test(word)) {
+      continue;
+    }
+    if (globToRegExp(word)?.test(PROTECTED_DIR)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 const RULES: {
   id: string;
   reason: string;
@@ -79,12 +140,13 @@ const RULES: {
 }[] = [
   {
     // Anything under the protected directory, globs and encoders included:
-    // `cat .secrets/*` and `base64 .secrets/demo.env` are the same act as
-    // `cat .secrets/demo.env`.
+    // `cat .secrets/*`, `cat .secr*/demo*` and `base64 .secrets/demo.env` are
+    // the same act as `cat .secrets/demo.env`.
     id: "protected-env-file",
     reason: "Attempt to read the protected secret fixture",
     test: (text) =>
       /\.secrets\s*[\\/]/i.test(text) ||
+      globReachesProtectedDir(text) ||
       (/\bdemo\.env\b/i.test(text) && FILE_READ.test(text)),
   },
   {
