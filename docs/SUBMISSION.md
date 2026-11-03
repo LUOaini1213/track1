@@ -1,9 +1,7 @@
-# Devpost paste pack — TikTok TechJam 2026 Track 1
+# Submission write-up — TikTok TechJam 2026 Track 1
 
-Copy these fields into **Enter a Submission** on
-https://tiktoktechjam2026.devpost.com/
-
-Deadline: **1 September 2026, 12:00 SGT**. After that, edits are not accepted.
+The text prepared for the Devpost submission, kept as a record. The
+current state of the project is in the [README](../README.md).
 
 ## Project name
 
@@ -78,9 +76,3 @@ Single-user JSON store. Pattern policy, not a hardened sandbox. Default containe
 2:20 — Optional: hash of `.secrets/demo.env` unchanged.  
 2:35 — Follow-up: `Add a --help flag to the CLI.` Completes. Click Stop.  
 2:50 — Close: middleware is backend-enforced; UI only shows evidence.
-
-## How to click Submit
-
-1. Every teammate: https://bit.ly/TikTokTechJam2026Registration **and** Join on Devpost.  
-2. One teammate: Devpost → Enter a Submission → paste this pack → public repo + YouTube.  
-3. Submit before **1 Sep 2026 12:00 SGT**. Drafts can be edited until that time; after that, no material changes.

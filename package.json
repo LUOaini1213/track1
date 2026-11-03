@@ -2,7 +2,7 @@
   "name": "volc-agent-launchpad",
   "version": "1.0.0",
   "private": true,
-  "description": "A middleware-free Agent platform starter kit running Codex CLI locally or on Volcengine ECS.",
+  "description": "Glass Box trace plane (span waterfall, redaction, secret-exfiltration policy, durable OTLP export) built on the Volc Agent Launchpad starter kit.",
   "type": "module",
   "workspaces": [
     "apps/*"
@@ -16,9 +16,10 @@
     "build": "npm run build -w @launchpad/contract && npm run build -w @launchpad/web && npm run build -w @launchpad/server",
     "typecheck": "npm run build -w @launchpad/contract && npm run typecheck --workspaces --if-present",
     "test": "npm run test -w @launchpad/contract && npm run test -w @launchpad/server && npm run test -w @launchpad/web",
-    "check": "npm run typecheck && npm run test && npm run build && npm run smoke && npm run smoke:replay && npm run smoke:otlp",
+    "check": "npm run check:evidence && npm run typecheck && npm run test && npm run build && npm run smoke && npm run smoke:replay && npm run smoke:otlp",
     "poc": "./scripts/start-local-poc.sh",
     "start": "npm run start -w @launchpad/server",
+    "check:evidence": "node scripts/check-evidence.mjs",
     "smoke": "node scripts/smoke-start.mjs",
     "smoke:replay": "node scripts/smoke-replay.mjs",
     "smoke:otlp": "node scripts/verify-otlp-recovery.mjs",

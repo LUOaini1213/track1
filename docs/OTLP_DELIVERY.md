@@ -151,20 +151,31 @@ write plus a flushed outbox publication. Measurements are host-specific; the
 replay path uses no model, and differences do not establish an application-wide
 speedup or a cloud latency claim.
 
-Measured on 2026-10-09 with Node 24.18.0, Windows 10.0.26200 and an Intel i5-14500,
-at feature source `5552e1ef757a201ca1191b19e6cab100c2bca260`:
+Measured on 2026-11-03 with Node 24.19.0, Windows 10.0.26200 and an Intel
+i7-11370H laptop CPU on a shared host, at source
+`ff2da0db46ae6444264cf67aa9f89792fb811f6d`:
 
 | Measurement | Baseline p95 | Durable outbox p95 | Samples per arm |
 | --- | --- | --- | --- |
-| Replay HTTP Run completion; durable arm's collector always returns 503 | 219.998 ms | 203.759 ms | 40 |
-| Local persistence of 100 spans | 3.471 ms | 12.458 ms | 40 |
+| Replay HTTP Run completion; durable arm's collector always returns 503 | 182.939 ms | 183.676 ms | 40 |
+| Local persistence of 100 spans | 2.107 ms | 12.052 ms | 40 |
 
 All 40 measured durable-arm Runs completed. Including excluded warmups, 44
 pending Runs remained on disk during the 503 outage. The local persistence
-comparison shows the added flush/publication cost; the lower replay p95 is host
-variation, not evidence that exporting improves execution. The
+comparison shows the added flush/publication cost. The replay p95 values are
+within host variation of each other; they do not show that exporting changes
+execution time either way. The
 [raw benchmark](evidence/otlp-benchmark.json) records normalized source hashes and
-methodology. [Forced-process recovery evidence](evidence/otlp-recovery.json)
-records byte-identical replay after 503/timeout and no resend after confirmation.
-The [earlier measurement at source 3ab5f15](evidence/otlp-benchmark-3ab5f15.json)
-is retained as a historical observation, not attributed to subsequent UI changes.
+methodology. `npm run check:evidence` (also in CI) fails if a number in this
+table or in the README differs from that record, or if one of its hashed source
+files has changed since the measurement.
+
+[Forced-process recovery evidence](evidence/otlp-recovery.json) records
+byte-identical replay after 503/timeout and no resend after confirmation. The
+same scenario runs on every CI build as `npm run smoke:otlp`.
+
+Earlier measurements are kept as historical observations, not attributed to
+later changes: [source 5552e1e](evidence/otlp-benchmark-5552e1e.json) (Node
+24.18.0, Intel i5-14500, 2026-10-09) and
+[source 3ab5f15](evidence/otlp-benchmark-3ab5f15.json). Their source hashes no
+longer match the current files.

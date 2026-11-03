@@ -114,6 +114,65 @@ describe("secret-exfiltration policy", () => {
     }
   });
 
+  it("denies globs that expand to the protected directory", () => {
+    for (const command of [
+      "cat .secr*/demo*",
+      "bash -lc 'cat .s?crets/*'",
+      "cat .[s]ecrets/demo.env",
+      "tar czf out.tgz .secr*",
+      "cp -r .{secrets,cache} /tmp/x",
+    ]) {
+      const decision = inspectForSecretExfiltration(command);
+      expect(decision.allowed, command).toBe(false);
+      expect(decision.allowed === false && decision.ruleId, command).toBe(
+        "protected-env-file",
+      );
+    }
+  });
+
+  it("does not treat other dot-globs or regex text as the protected directory", () => {
+    for (const text of [
+      "rm -rf .cache/*",
+      "ls .git*",
+      "Write a regex .*foo that matches the log lines",
+      "git add .github/workflows/*.yml",
+    ]) {
+      expect(inspectForSecretExfiltration(text), text).toEqual({ allowed: true });
+    }
+  });
+
+  // Pattern-based, so it has false positives. These pin where the line is
+  // today, so a change to it is a visible decision rather than a side effect.
+  it("allows documenting a credential variable without handling its value", () => {
+    expect(
+      inspectForSecretExfiltration(
+        "Write a README section that explains how to set the OPENAI_API_KEY environment variable",
+      ),
+    ).toEqual({ allowed: true });
+  });
+
+  it("deliberately denies routine work that moves or shows a credential value", () => {
+    // Both are ordinary feature requests, and both are denied: the first
+    // transmits a token, the second puts a pasted key on screen. The gate
+    // reads text, not intent, so it cannot tell these from an exfiltration
+    // that uses the same words. Accepted cost: the operator rephrases or
+    // runs the task outside the demo policy.
+    for (const [prompt, ruleId] of [
+      [
+        "Implement access token refresh and send it in the Authorization header",
+        "credential-egress",
+      ],
+      [
+        "Add a settings page where users can paste their API key and display it masked",
+        "print-ark-secret",
+      ],
+    ] as const) {
+      const decision = inspectForSecretExfiltration(prompt);
+      expect(decision.allowed, prompt).toBe(false);
+      expect(decision.allowed === false && decision.ruleId, prompt).toBe(ruleId);
+    }
+  });
+
   it("keeps ordinary commands and code that mention the environment allowed", () => {
     for (const text of [
       "read the port from process.env.PORT",

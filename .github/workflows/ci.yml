@@ -1,16 +1,18 @@
 name: ci
 
-# 无模型 key、Codex 或容器引擎；OTLP 恢复检查仅使用本机 HTTP。
+# No model key, Codex install or container engine is needed. The OTLP recovery
+# check uses loopback HTTP only.
 #
-# 这一点是设计出来的，不是碰巧：
-#   - `codex-runner.live.test.ts` 跑的是 `fixtures/fake-codex.js`，不是真的 Codex；
-#   - `replay-runner.test.ts` 用 `RUNTIME_PROVIDER=replay` 把录制的 Codex 事件
-#     喂进真实的解析 / 追踪 / 脱敏 / 策略链路，所以整条控制面能在无 key 下被验证；
-#   - 容器那条路径只测不需要引擎的部分。
+# That is by design:
+#   - `codex-runner.live.test.ts` runs `fixtures/fake-codex.js`, not real Codex;
+#   - `replay-runner.test.ts` uses `RUNTIME_PROVIDER=replay` to feed recorded
+#     Codex events through the real parse / trace / redact / policy path, so the
+#     whole control plane is exercised without a key;
+#   - only the engine-free parts of the container path are tested.
 #
-# 为什么要有这个文件：这个仓有 28 个测试文件 / 271 个用例，但在此之前它们只有
-# 「本机跑过」这一句话背书。同一棵树的其他仓都有绿徽章，只有这里没有——
-# 而「本机跑过但没在 CI 上跑过」和「没跑过」对读者是一回事。
+# Windows is in the matrix because the README recommends the Windows host POC
+# and the OTLP measurements were taken on Windows. The suite uses real HTTP,
+# files and child processes, so it has to pass there, not only on Linux.
 
 on:
   push:
@@ -18,14 +20,18 @@ on:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
-        # 22 是 package.json engines 声明的下限，24 是开发用的版本。
-        # 两个都跑，是因为声明了下限就得证明下限真的能跑。
+        # 22 is the lower bound in package.json `engines`; 24 is the version
+        # used for development. Declaring a lower bound means proving it runs.
+        os: [ubuntu-latest]
         node-version: ["22", "24"]
+        include:
+          - os: windows-latest
+            node-version: "24"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -33,21 +39,27 @@ jobs:
           node-version: ${{ matrix.node-version }}
           cache: npm
       - name: Install
-        # `npm ci` 而不是 `npm install`：锁文件说什么就装什么，
-        # 否则 CI 装到的依赖和本机不是一套，红了也说明不了问题。
+        # `npm ci`, not `npm install`: install exactly what the lockfile says,
+        # otherwise a red run says nothing about the code.
         run: npm ci
+      - name: Evidence and documentation numbers
+        # Every measured number in README.md and docs/OTLP_DELIVERY.md must
+        # equal the committed evidence JSON, that JSON's source hashes must
+        # match the current files, and relative links in the docs must resolve.
+        run: npm run check:evidence
       - name: Typecheck
         run: npm run typecheck
       - name: Tests
         run: npm test
       - name: Build
         run: npm run build
-      - name: Smoke — start the built artefact and ask it one question
-        # 前三步都绿过、而生产入口起不来的事发生过一次：contract 包导出的是
-        # TypeScript 源码，tsc / vitest / Vite 各自都能解析，只有真正 `node
-        # dist/index.js` 才暴露。所以这一步不能省。
+      - name: Smoke - start the built artefact and ask it one question
+        # This once caught a production entry point that would not start while
+        # typecheck, tests and build were all green: the contract package
+        # exported TypeScript source, which tsc, vitest and Vite each resolve,
+        # and only a real `node dist/index.js` exposed it.
         run: npm run smoke
-      - name: Replay smoke — complete, fail, and deny real HTTP runs
+      - name: Replay smoke - complete, fail, and deny real HTTP runs
         run: npm run smoke:replay
-      - name: OTLP smoke — 503, timeout and killed-process recovery
+      - name: OTLP smoke - 503, timeout and killed-process recovery
         run: npm run smoke:otlp

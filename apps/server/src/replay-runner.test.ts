@@ -153,15 +153,41 @@ describe("ReplayRunner", () => {
       fixtureDir: DEFAULT_REPLAY_FIXTURE_DIR,
       speed: 0.001,
     });
+    // Wait on the first replayed event, not on a fixed sleep: after it the
+    // runner is waiting for the second one, however slow the disk was.
+    let firstEvent!: () => void;
+    const waiting = new Promise<void>((resolve) => {
+      firstEvent = resolve;
+    });
     const pending = runner.run({
       agentId: "a",
       workspacePath: "/w",
       prompt: "hello",
       threadId: null,
+      onCodexEvent: () => firstEvent(),
     });
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await waiting;
     expect(await runner.cancel("a")).toBe(true);
     await expect(pending).rejects.toThrow("Run cancelled");
+    expect(await runner.cancel("a")).toBe(false);
+  });
+
+  it("honors a cancel pressed while the fixtures are still loading", async () => {
+    const runner = fastRunner();
+    let events = 0;
+    const pending = runner.run({
+      agentId: "a",
+      workspacePath: "/w",
+      prompt: "hello",
+      threadId: null,
+      onCodexEvent: () => {
+        events += 1;
+      },
+    });
+    // Nothing has been awaited yet, so the fixture files are not read.
+    expect(await runner.cancel("a")).toBe(true);
+    await expect(pending).rejects.toThrow("Run cancelled");
+    expect(events).toBe(0);
     expect(await runner.cancel("a")).toBe(false);
   });
 });

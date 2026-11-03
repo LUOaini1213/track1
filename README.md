@@ -1,17 +1,18 @@
-# Volc Agent Launchpad — Trace Plane
+# Glass Box Trace Plane for Volc Agent Launchpad
 
 [![ci](https://github.com/LUOaini1213/track1/actions/workflows/ci.yml/badge.svg)](https://github.com/LUOaini1213/track1/actions/workflows/ci.yml)
 
-> **TikTok TechJam 2026 result: this entry did not place.** The competition has
-> concluded and this submission was not among those selected. Everything below is
-> what was built and measured — each number traces to a committed artifact, and
-> none of it was ever a placement claim.
+TikTok TechJam 2026, Track 1, Glass Box (trace and audit). **This entry did not place.**
 
-**Track entered: Glass Box (trace and audit)**
+**What was built.** On top of the official Volc Agent Launchpad starter ([provenance](#provenance)), every Agent Run becomes a correlated span waterfall (control plane, Codex JSON events, policy). Key-like strings are redacted before they are stored. A pattern-based gate denies secret-exfiltration prompts and commands. Finished traces go to an OTLP collector through a durable on-disk outbox.
 
-**[▶ 3-minute demo video](https://youtu.be/ARw1wfMX-JU)** · Repository: <https://github.com/LUOaini1213/track1>
+**What was measured.**
+- Collector failures: delivery recovers after HTTP 503, an HTTP timeout and a SIGKILL restart. Acknowledged traces are not resent and replayed payloads are byte-identical ([evidence](docs/evidence/otlp-recovery.json); the same check runs on every CI build as `npm run smoke:otlp`).
+- Cost of durability: persisting 100 spans takes 2.1 ms at p95 without the outbox and 12.1 ms with it, 40 samples per arm on one Windows laptop ([evidence](docs/evidence/otlp-benchmark.json), [method](docs/OTLP_DELIVERY.md#verification-and-performance)).
 
-One-page architecture: [docs/TRACE_PLANE.md](docs/TRACE_PLANE.md).
+**Limits.** Single-user proof of concept, not multi-tenant isolation. The policy matches text patterns, so it has false positives and negatives, some of them pinned in `apps/server/src/policy.test.ts`. The numbers come from one host; no model or cloud path was benchmarked. `npm run check:evidence` fails if any number here drifts from its evidence file.
+
+**[▶ 3-minute demo video](https://youtu.be/ARw1wfMX-JU)** · [One-page architecture](docs/TRACE_PLANE.md)
 
 ## Try the trace UI without an API key
 
@@ -60,12 +61,26 @@ Delete its disposable Agent, reload to see the persisted pending cleanup, then u
 against temporary files and never runs a model. See
 [cleanup status, retry and compatibility](docs/DELETION_RECOVERY.md#browser-status-and-retry).
 
-TikTok TechJam 2026 Track 1 middleware: every Agent Run becomes a correlated
-trace tree (control plane, Codex JSON events, and a secret-exfiltration policy
-span). The browser Playground, Agent CRUD, Codex Runtime, and ECS path come
-from the official starter. This fork adds the missing observability plane, and
-that part is mine: one commit here is the starter-kit import, every other commit
-is my own — `git shortlog -sne` prints the split.
+## Provenance
+
+The browser Playground, Agent CRUD, Codex Runtime and ECS deployment path come
+from the official starter kit, imported as the first commit,
+[8d0bd4f](https://github.com/LUOaini1213/track1/commit/8d0bd4f), by its original
+author. This repository is a copy, not a GitHub fork, so the diff against the
+starter is linked here:
+[8d0bd4f...main](https://github.com/LUOaini1213/track1/compare/8d0bd4f...main).
+Every later commit is mine; `git shortlog -sne` prints the split.
+
+Added on top of the starter:
+
+- Server (`apps/server/src/`): `trace.ts` (span collection), `redact.ts`,
+  `policy.ts`, `otlp.ts` and `otlp-outbox.ts` (export and durable delivery),
+  `span-store.ts`, `codex-stream.ts`, `replay-runner.ts` with the fixtures in
+  `apps/server/fixtures/replay/`, and the deletion-recovery path.
+- `apps/contract/`: types and logic shared by server and web.
+- Web (`apps/web/src/`): the waterfall, OTLP delivery and cleanup-status views.
+- `scripts/`: the smoke, replay, recovery, benchmark and evidence checks, and
+  `.github/workflows/ci.yml`.
 
 > [!WARNING]
 > Single-user proof of concept. Ordinary containers are not multi-tenant
@@ -110,8 +125,9 @@ recorded events after it are never replayed.
 
 ### From the official starter kit
 
-The Playground and Agent CRUD below ship with the starter this repository forks;
-they are here so the trace plane above has visible context.
+The Playground and Agent CRUD below ship with the starter this repository was
+built on (see [Provenance](#provenance)); they are here so the trace plane above
+has visible context.
 
 ![Agent Playground showing lifecycle controls, starter prompts, and the Codex Runtime](docs/assets/playground.jpg)
 
@@ -217,8 +233,8 @@ path on `RUNTIME_PROVIDER=local-process`.
 ### 2. Clone the repository
 
 ```bash
-git clone <repository-url> volc-agent-launchpad
-cd volc-agent-launchpad
+git clone https://github.com/LUOaini1213/track1.git
+cd track1
 ```
 
 Skip this step when already working from the repository root.
@@ -415,7 +431,13 @@ the bearer token when `APP_AUTH_TOKEN` is set.
 ## Validation
 
 ```bash
-npm run check
+npm run check            # what CI runs, on Ubuntu (Node 22, 24) and Windows (Node 24)
+```
+
+The deployment files are not checked in CI. With Terraform and Docker
+installed, check them by hand:
+
+```bash
 terraform fmt -check -recursive deploy/volcengine
 docker compose config
 ```

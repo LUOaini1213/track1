@@ -140,20 +140,26 @@ export class ReplayRunner implements AgentRunner {
     if (this.active.has(request.agentId)) {
       throw new Error("Agent already has an active replay");
     }
-    const fixture = selectReplayFixture(await this.load(), request.prompt);
-    const parsed: ParsedEvents = {
-      messages: [],
-      threadId: request.threadId,
-      usage: null,
-      errors: [],
-    };
     let cancelled = false;
     let wake: (() => void) | null = null;
+    // Registered before the first await, so a Stop pressed while the fixtures
+    // are still being read is not lost: `cancel()` finds the entry, and the
+    // check after loading turns it into RunCancelledError.
     this.active.set(request.agentId, () => {
       cancelled = true;
       wake?.();
     });
     try {
+      const fixture = selectReplayFixture(await this.load(), request.prompt);
+      if (cancelled) {
+        throw new RunCancelledError();
+      }
+      const parsed: ParsedEvents = {
+        messages: [],
+        threadId: request.threadId,
+        usage: null,
+        errors: [],
+      };
       let clock = 0;
       for (const entry of fixture.events) {
         const delayMs = Math.max(0, entry.atMs - clock) / this.options.speed;

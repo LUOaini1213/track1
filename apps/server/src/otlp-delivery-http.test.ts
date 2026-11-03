@@ -37,7 +37,7 @@ async function configuration(endpoint = "") {
   return loadConfig({ NODE_ENV: "test", LOG_LEVEL: "silent", APP_DATA_DIR: path.join(root, "data"),
     AGENT_WORKSPACE_ROOT: path.join(root, "workspaces"), CODEX_HOME: path.join(root, "codex"),
     ARK_API_KEY: "test", ARK_MODEL: "demo", OTEL_EXPORTER_OTLP_ENDPOINT: endpoint,
-    OTEL_EXPORTER_OTLP_HEADERS: "Authorization=delivery-private-header", OTEL_EXPORTER_OTLP_TIMEOUT: "100",
+    OTEL_EXPORTER_OTLP_HEADERS: "Authorization=delivery-private-header", OTEL_EXPORTER_OTLP_TIMEOUT: "2000",
     OTEL_EXPORTER_OTLP_RETRY_INITIAL_MS: "100", OTEL_EXPORTER_OTLP_RETRY_MAX_MS: "200" });
 }
 async function open(config: AppConfig, executor = runner) {

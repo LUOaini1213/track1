@@ -38,7 +38,10 @@ async function setup(endpoint: string, extra: Record<string, string> = {}) {
   const root = await mkdtemp(path.join(tmpdir(), "launchpad-outbox-")); roots.push(root);
   const config = loadConfig({ NODE_ENV: "test", LOG_LEVEL: "silent", APP_DATA_DIR: path.join(root, "data"),
     AGENT_WORKSPACE_ROOT: path.join(root, "workspaces"), CODEX_HOME: path.join(root, "codex"),
-    OTEL_EXPORTER_OTLP_ENDPOINT: endpoint, OTEL_EXPORTER_OTLP_TIMEOUT: "100",
+    // 2 s, not 100 ms: a client timeout is a retry, so a short one on a loaded
+    // host turned "exactly one request" assertions into two. The one test that
+    // is about timeouts sets its own.
+    OTEL_EXPORTER_OTLP_ENDPOINT: endpoint, OTEL_EXPORTER_OTLP_TIMEOUT: "2000",
     OTEL_EXPORTER_OTLP_RETRY_INITIAL_MS: "100", OTEL_EXPORTER_OTLP_RETRY_MAX_MS: "200", ...extra });
   const box = new OtlpOutbox(config); boxes.push(box); await box.initialize();
   return { root, config, box, file: (id: string) => path.join(config.dataDirectory, "otlp-outbox", id + ".json") };
@@ -90,7 +93,7 @@ describe("durable OTLP outbox over actual HTTP", () => {
 
   it("times out without discarding the payload, then retries the identical batch", async () => {
     const target = await collector((response, n) => { if (n > 1) accepted(response); });
-    const { box, file } = await setup(target.endpoint); const id = randomUUID();
+    const { box, file } = await setup(target.endpoint, { OTEL_EXPORTER_OTLP_TIMEOUT: "100" }); const id = randomUUID();
     await box.enqueue(id, spans(id));
     await expect.poll(async () => (await record(file(id))).state).toBe("delivered");
     expect(target.requests.length).toBeGreaterThanOrEqual(2);
@@ -181,9 +184,14 @@ describe("durable OTLP outbox over actual HTTP", () => {
 
   it("honors Retry-After and shutdown aborts a hanging request promptly", async () => {
     const target = await collector((response) => { response.writeHead(503, { "retry-after": "2" }); response.end(); });
-    const { box, file } = await setup(target.endpoint); const id = randomUUID(); await box.enqueue(id, spans(id));
+    const { box, file } = await setup(target.endpoint); const id = randomUUID();
+    // The attempt happens after `enqueued`, so honoring Retry-After: 2 puts the
+    // next attempt at least 2 s after it. The configured backoff alone is at
+    // most 200 ms. Measuring from a fixed point before the attempt, not from
+    // whenever the poll happens to observe it, keeps this independent of load.
+    const enqueued = Date.now(); await box.enqueue(id, spans(id));
     await expect.poll(async () => (await record(file(id))).attempts).toBe(1);
-    expect((await record(file(id))).nextAttemptAt - Date.now()).toBeGreaterThan(1500);
+    expect((await record(file(id))).nextAttemptAt - enqueued).toBeGreaterThanOrEqual(2000);
     await box.shutdown();
     const hanging = await collector(() => {});
     const second = await setup(hanging.endpoint, { OTEL_EXPORTER_OTLP_TIMEOUT: "5000" });
